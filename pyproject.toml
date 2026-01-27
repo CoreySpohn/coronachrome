@@ -1,0 +1,49 @@
+[build-system]
+requires = ['hatchling', "hatch-fancy-pypi-readme", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "coronachrome"
+description = "Multi-wavelength analysis tools for coronagraphic direct imaging."
+authors = [{ name = "Corey Spohn", email = "corey.a.spohn@nasa.gov" }]
+dynamic = ['readme', 'version']
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["ruff", "pre-commit"]
+docs = ["sphinx", "myst-nb", "sphinx-book-theme", "sphinx-autoapi"]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/CoreySpohn/coronachrome"
+Issues = "https://github.com/CoreySpohn/coronachrome/issues"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/coronachrome/_version.py"
+
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/coronachrome"]
+
+[tool.ruff.lint]
+select = ["D", "I"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
