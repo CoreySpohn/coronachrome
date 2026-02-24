@@ -19,7 +19,7 @@ classifiers = [
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-dev = ["ruff", "pre-commit"]
+dev = ["pre-commit"]
 docs = ["sphinx", "myst-nb", "sphinx-book-theme", "sphinx-autoapi"]
 test = ["pytest"]
 
@@ -43,7 +43,7 @@ path = "README.md"
 packages = ["src/coronachrome"]
 
 [tool.ruff.lint]
-select = ["D", "I"]
+select = ["B", "D", "E", "F", "I", "UP", "RUF"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
