@@ -44,3 +44,13 @@ def test_h_mono_matches_spmv():
     z = spatial_sample(cube, ir)
     direct = (r.H_mono @ z.reshape(-1)).reshape(ir.det_shape)
     assert jnp.allclose(direct, r.forward_spmv(cube))
+
+
+def test_streaming_matches_spmv():
+    """Streaming scatter-add forward equals the BCOO spmv forward."""
+    r, _ir, fp, n_wav = _renderer()
+    key_cube = jnp.arange(n_wav * fp[0] * fp[1], dtype=float).reshape(
+        n_wav, fp[0], fp[1]
+    )
+    cube = jnp.sin(key_cube)
+    assert jnp.allclose(r.forward_streaming(cube), r.forward_spmv(cube), atol=1e-9)

@@ -6,6 +6,7 @@ numerically identical.
 """
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.experimental.sparse import BCOO
 
@@ -49,3 +50,23 @@ class IFSRenderer(eqx.Module):
         z = spatial_sample(cube, self.ir)
         y = self.H_mono @ z.reshape(-1)
         return y.reshape(self.ir.det_shape)
+
+    @eqx.filter_jit
+    def forward_streaming(self, cube):
+        """Forward via per-wavelength scatter-add accumulation into the detector."""
+        ir = self.ir
+        cube_flat = cube.reshape(ir.n_wav, -1)
+        ny, nx = ir.det_shape
+
+        def body(detector, w):
+            sampled = cube_flat[w][ir.spatial_src]
+            zc = jnp.sum(sampled * ir.spatial_w, axis=1)
+            rows_w = ir.det_rows[:, w, :]
+            vals_w = ir.det_vals[:, w, :]
+            contrib = (vals_w * zc[:, None]).reshape(-1)
+            detector = detector.at[rows_w.reshape(-1)].add(contrib)
+            return detector, None
+
+        det0 = jnp.zeros(ny * nx)
+        detector, _ = jax.lax.scan(body, det0, jnp.arange(ir.n_wav))
+        return detector.reshape(ir.det_shape)
