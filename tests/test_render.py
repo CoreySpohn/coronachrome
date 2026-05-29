@@ -84,3 +84,14 @@ def test_forward_is_differentiable():
     g = jax.grad(misfit)(cube0)
     assert g.shape == cube0.shape
     assert float(jnp.linalg.norm(g)) > 0.0
+
+
+def test_end_to_end_point_source_lands_on_detector():
+    """A single bright focal-plane pixel produces nonzero detector flux."""
+    r, ir, fp, n_wav = _renderer()
+    cube = jnp.zeros((n_wav, fp[0], fp[1]))
+    cube = cube.at[:, fp[0] // 2, fp[1] // 2].set(1.0)
+    det = r.forward_spmv(cube)
+    assert det.shape == ir.det_shape
+    assert float(det.max()) > 0.0
+    assert float(det.sum()) > 0.0
