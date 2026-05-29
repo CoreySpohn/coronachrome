@@ -57,3 +57,45 @@ def test_unregistered_type_raises():
     """build_ir raises NotImplementedError for an unregistered disperser type."""
     with pytest.raises(NotImplementedError):
         build_ir(object(), jnp.array([660.0]), fp_shape=(8, 8))
+
+
+def test_moffat_psflet_build_normalizes():
+    """A Moffat-PSFlet disperser builds an IR with flux-normalized footprints."""
+    disp = LensletDisperser(
+        pitch_m=174e-6,
+        pixsize_m=13e-6,
+        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
+        lam_ref_nm=660.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([100.0, 0.0]),
+        psflet_params=jnp.array([1.5, 2.5]),
+        grid_kind="square",
+        n_lenslets=6,
+        psflet_kind="moffat",
+        detector_shape=(256, 256),
+    )
+    lam = jnp.linspace(640.0, 680.0, 5)
+    ir = build_ir(disp, lam, fp_shape=(64, 64))
+    sums = ir.det_vals.sum(axis=2)
+    nonzero = sums[sums > 1e-8]
+    assert jnp.allclose(nonzero, 1.0, atol=1e-5)
+
+
+def test_off_detector_footprints_warn():
+    """Lenslets whose traces fall off a small detector trigger a warning."""
+    disp = LensletDisperser(
+        pitch_m=174e-6,
+        pixsize_m=13e-6,
+        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
+        lam_ref_nm=660.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([100.0, 0.0]),
+        psflet_params=jnp.array([0.7]),
+        grid_kind="square",
+        n_lenslets=8,
+        psflet_kind="gaussian",
+        detector_shape=(40, 40),
+    )
+    lam = jnp.linspace(640.0, 680.0, 5)
+    with pytest.warns(UserWarning, match="off the detector"):
+        build_ir(disp, lam, fp_shape=(64, 64))
