@@ -72,3 +72,15 @@ def test_lstsq_is_differentiable():
     g = jax.grad(loss)(detector)
     assert g.shape == detector.shape
     assert bool(jnp.all(jnp.isfinite(g)))
+
+
+def test_lstsq_recovers_sharp_dip_spaxel():
+    """A sharp absorption dip (O2-like) at one spaxel is recovered by lstsq."""
+    r, n_wav = _renderer(n_wav=15)
+    ch = r.ir.n_channels // 2
+    spec = jnp.ones(n_wav).at[11].set(0.05)  # deep dip at wavelength index 11
+    z_true = jnp.ones((r.ir.n_channels, n_wav)).at[ch].set(spec)
+    detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
+    z_hat = lstsq(r, detector)
+    assert jnp.allclose(z_hat[ch], spec, atol=1e-3)
+    assert float(z_hat[ch][11]) < 0.2
