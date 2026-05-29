@@ -8,6 +8,8 @@ extractor is a later addition (Plan 3).
 """
 
 import jax.numpy as jnp
+import lineax as lx
+from jax import eval_shape
 
 
 def matched_filter(renderer, detector):
@@ -21,3 +23,27 @@ def matched_filter(renderer, detector):
     num = renderer.adjoint(detector)  # (n_channels, n_wav) = (H^T y) reshaped
     colnorm2 = (renderer.ir.det_vals**2).sum(axis=2)  # (n_channels, n_wav)
     return num / jnp.clip(colnorm2, 1e-12, None)
+
+
+def lstsq(renderer, detector, weights=None, rtol=1e-6, atol=1e-6):
+    """Noise-weighted least-squares spectra via lineax NormalCG (matrix-free).
+
+    Solves ``min_z || sqrt(w) * (H_mono z - y) ||^2`` where ``z`` is the
+    flattened (n_channels, n_wav) spectra and ``y`` is the flattened detector.
+    ``weights`` is a per-detector-pixel weight (default uniform); pass
+    ``1 / N`` (N the per-pixel noise variance) for noise-weighted extraction.
+    Returns z_hat of shape (n_channels, n_wav). Differentiable through the
+    solve with numerically stable gradients.
+    """
+    ir = renderer.ir
+    ncw = ir.n_channels * ir.n_wav
+    h_mono = renderer.H_mono
+    y = detector.reshape(-1)
+    if weights is None:
+        sw = jnp.ones_like(y)
+    else:
+        sw = jnp.sqrt(jnp.asarray(weights).reshape(-1))
+    z_struct = eval_shape(lambda: jnp.zeros(ncw, dtype=y.dtype))
+    operator = lx.FunctionLinearOperator(lambda z: sw * (h_mono @ z), z_struct)
+    sol = lx.linear_solve(operator, sw * y, solver=lx.NormalCG(rtol=rtol, atol=atol))
+    return sol.value.reshape(ir.n_channels, ir.n_wav)

@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
-from coronachrome.extract import matched_filter
+from coronachrome.extract import lstsq, matched_filter
 from coronachrome.render import IFSRenderer
 
 
@@ -39,3 +39,36 @@ def test_matched_filter_correlates_with_truth():
     assert z_hat.shape == (r.ir.n_channels, n_wav)
     c = jnp.corrcoef(z_true.reshape(-1), z_hat.reshape(-1))[0, 1]
     assert float(c) > 0.9
+
+
+def test_lstsq_recovers_injected_spectra():
+    """Noiseless lstsq recovers an injected per-lenslet spectrum near-exactly."""
+    r, n_wav = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(0), (r.ir.n_channels, n_wav))
+    detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
+    z_hat = lstsq(r, detector)
+    assert z_hat.shape == (r.ir.n_channels, n_wav)
+    assert jnp.allclose(z_hat, z_true, atol=1e-4)
+
+
+def test_weighted_lstsq_recovers_spectra():
+    """Per-detector-pixel weighting still recovers the noiseless spectrum."""
+    r, n_wav = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(2), (r.ir.n_channels, n_wav))
+    detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
+    weights = 1.0 / jnp.clip(detector.reshape(-1), 1e-3, None)
+    z_hat = lstsq(r, detector, weights=weights)
+    assert jnp.allclose(z_hat, z_true, atol=1e-3)
+
+
+def test_lstsq_is_differentiable():
+    """Verify lstsq has finite gradients w.r.t. the detector (lineax stable grads)."""
+    r, _n_wav = _renderer()
+    detector = jnp.ones(r.ir.det_shape)
+
+    def loss(d):
+        return jnp.sum(lstsq(r, d) ** 2)
+
+    g = jax.grad(loss)(detector)
+    assert g.shape == detector.shape
+    assert bool(jnp.all(jnp.isfinite(g)))
