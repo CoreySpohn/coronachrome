@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
-dependencies = ["jax", "equinox", "optixstuff", "hwoutils"]
+dependencies = ["jax", "equinox", "optixstuff"]
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
@@ -29,7 +29,6 @@ Issues = "https://github.com/CoreySpohn/coronachrome/issues"
 
 [tool.uv.sources]
 optixstuff = { workspace = true }
-hwoutils = { workspace = true }
 
 [tool.hatch.version]
 source = "vcs"
