@@ -45,6 +45,12 @@ class IFSRenderer(eqx.Module):
         return self.H_mono
 
     @eqx.filter_jit
+    def adjoint(self, detector):
+        """Map a detector image back to channel space: z = H_mono^T y."""
+        zt = self.H_mono.T @ detector.reshape(-1)
+        return zt.reshape(self.ir.n_channels, self.ir.n_wav)
+
+    @eqx.filter_jit
     def forward_spmv(self, cube):
         """Forward via one BCOO matvec: spatial sample, then H_mono @ z."""
         z = spatial_sample(cube, self.ir)

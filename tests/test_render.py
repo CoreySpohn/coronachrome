@@ -1,5 +1,6 @@
 """Tests for the IFS renderer forward model."""
 
+import jax
 import jax.numpy as jnp
 from optixstuff.disperser import LensletDisperser
 
@@ -54,3 +55,32 @@ def test_streaming_matches_spmv():
     )
     cube = jnp.sin(key_cube)
     assert jnp.allclose(r.forward_streaming(cube), r.forward_spmv(cube), atol=1e-9)
+
+
+def test_adjoint_dot_product_identity():
+    """The adjoint satisfies the inner-product identity <H z, y> == <z, H^T y>."""
+    r, ir, _fp, _n_wav = _renderer()
+    k1, k2 = jax.random.split(jax.random.PRNGKey(0))
+    z = jax.random.normal(k1, (ir.n_channels, ir.n_wav))
+    y = jax.random.normal(k2, ir.det_shape)
+    hz = r.H_mono @ z.reshape(-1)
+    hty = r.adjoint(y)
+    assert jnp.allclose(
+        jnp.dot(hz, y.reshape(-1)),
+        jnp.dot(z.reshape(-1), hty.reshape(-1)),
+        atol=1e-8,
+    )
+
+
+def test_forward_is_differentiable():
+    """forward_spmv has a finite, nonzero gradient w.r.t. the input cube."""
+    r, ir, fp, n_wav = _renderer()
+    target = jnp.ones(ir.det_shape)
+
+    def misfit(cube):
+        return jnp.sum((r.forward_spmv(cube) - target) ** 2)
+
+    cube0 = jnp.zeros((n_wav, fp[0], fp[1]))
+    g = jax.grad(misfit)(cube0)
+    assert g.shape == cube0.shape
+    assert float(jnp.linalg.norm(g)) > 0.0
