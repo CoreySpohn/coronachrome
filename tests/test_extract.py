@@ -3,11 +3,24 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
-from coronachrome.extract import lstsq, matched_filter
+from coronachrome.extract import (
+    lstsq,
+    matched_filter,
+    spectrum_covariance,
+    spectrum_errorbars,
+)
 from coronachrome.render import IFSRenderer
+
+
+def _dense_normal(r, weights):
+    """Dense weighted normal matrix A = H^T W H (ncw, ncw) for reference."""
+    hd = np.asarray(r.H_mono.todense())
+    w = np.ones(hd.shape[0]) if weights is None else np.asarray(weights).reshape(-1)
+    return hd.T @ (w[:, None] * hd)
 
 
 def _renderer(n=6, n_wav=9, fp=(64, 64)):
@@ -110,3 +123,66 @@ def test_lstsq_recovers_sharp_dip_spaxel():
     z_hat = lstsq(r, detector)
     assert jnp.allclose(z_hat[ch], spec, atol=1e-3)
     assert float(z_hat[ch][11]) < 0.2
+
+
+def test_spectrum_covariance_matches_dense_block():
+    """Per-channel covariance equals the dense (H^T W H)^-1 channel block."""
+    r, n_wav = _renderer()
+    n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
+    weights = jax.random.uniform(
+        jax.random.PRNGKey(3), (n_det,), minval=0.1, maxval=2.0
+    )
+    ainv = np.linalg.inv(_dense_normal(r, weights))
+    chans = jnp.array([r.ir.n_channels // 2, 0])
+    cov = np.asarray(spectrum_covariance(r, weights=weights, channels=chans))
+    for i, ch in enumerate(np.asarray(chans)):
+        base = int(ch) * n_wav
+        ref = ainv[base : base + n_wav, base : base + n_wav]
+        assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
+
+
+def test_spectrum_errorbars_is_sqrt_diag():
+    """Error bars equal sqrt of the covariance block diagonal."""
+    r, _n_wav = _renderer()
+    chans = jnp.array([r.ir.n_channels // 2])
+    cov = spectrum_covariance(r, channels=chans)
+    err = spectrum_errorbars(r, channels=chans)
+    assert jnp.allclose(err, jnp.sqrt(jnp.diagonal(cov, axis1=-2, axis2=-1)))
+
+
+def test_errorbars_scale_as_sqrt_noise():
+    """Doubling the per-pixel noise variance scales error bars by sqrt(2)."""
+    r, _n_wav = _renderer()
+    n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
+    chans = jnp.array([r.ir.n_channels // 2])
+    err_n1 = spectrum_errorbars(r, weights=None, channels=chans)  # N = 1
+    err_n2 = spectrum_errorbars(
+        r, weights=jnp.full(n_det, 0.5), channels=chans
+    )  # 1/N = 0.5 -> N = 2
+    assert jnp.allclose(err_n2 / err_n1, jnp.sqrt(2.0), rtol=1e-3)
+
+
+def test_covariance_montecarlo_coverage():
+    """Predicted covariance matches the empirical covariance of the GLS estimator."""
+    r, n_wav = _renderer()
+    ch = r.ir.n_channels // 2
+    n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
+    hd = np.asarray(r.H_mono.todense())  # W = I here
+    ainv = np.linalg.inv(hd.T @ hd)
+    gls = ainv @ hd.T  # z_hat = G y
+    base = ch * n_wav
+    rng = np.random.default_rng(0)
+    clean = np.zeros(n_det)  # true spectra are zero; covariance is signal-independent
+    draws = np.stack(
+        [
+            (gls @ (clean + rng.standard_normal(n_det)))[base : base + n_wav]
+            for _ in range(4000)
+        ]
+    )
+    emp = np.cov(draws.T)
+    pred = np.asarray(
+        spectrum_covariance(r, weights=jnp.ones(n_det), channels=jnp.array([ch]))
+    )[0]
+    # Variances (diagonal) are the error bars; check those tightly, full block loosely.
+    assert np.allclose(np.diag(emp), np.diag(pred), rtol=0.1)
+    assert np.allclose(emp, pred, atol=0.15 * float(np.max(np.diag(pred))))
