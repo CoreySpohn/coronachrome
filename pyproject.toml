@@ -27,9 +27,6 @@ test = ["pytest"]
 Homepage = "https://github.com/CoreySpohn/coronachrome"
 Issues = "https://github.com/CoreySpohn/coronachrome/issues"
 
-[tool.uv.sources]
-optixstuff = { workspace = true }
-
 [tool.hatch.version]
 source = "vcs"
 
