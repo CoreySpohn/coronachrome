@@ -43,7 +43,15 @@ def lstsq(renderer, detector, weights=None, rtol=1e-6, atol=1e-6):
         sw = jnp.ones_like(y)
     else:
         sw = jnp.sqrt(jnp.asarray(weights).reshape(-1))
+    # Column-equilibrate (Jacobi precondition): solve for unit-column-norm
+    # variables zp with z = d * zp, so the normal operator has a unit diagonal
+    # and O(1) eigenvalues. The det_vals are O(0.1), so without this the normal
+    # operator's smallest eigenvalue sits below NormalCG's float32 breakdown
+    # safeguard (~100 * size * eps) and the solver returns NaN, even though the
+    # operator is well-conditioned. The change of variables leaves z unchanged.
+    colnorm = jnp.sqrt((ir.det_vals**2).sum(axis=2)).reshape(-1)
+    d = 1.0 / jnp.clip(colnorm, 1e-12, None)
     z_struct = eval_shape(lambda: jnp.zeros(ncw, dtype=y.dtype))
-    operator = lx.FunctionLinearOperator(lambda z: sw * (h_mono @ z), z_struct)
+    operator = lx.FunctionLinearOperator(lambda zp: sw * (h_mono @ (d * zp)), z_struct)
     sol = lx.linear_solve(operator, sw * y, solver=lx.NormalCG(rtol=rtol, atol=atol))
-    return sol.value.reshape(ir.n_channels, ir.n_wav)
+    return (d * sol.value).reshape(ir.n_channels, ir.n_wav)

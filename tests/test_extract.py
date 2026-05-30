@@ -1,5 +1,6 @@
 """Tests for spectral extraction from a dispersed IFS detector image."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from optixstuff.disperser import LensletDisperser
@@ -72,6 +73,31 @@ def test_lstsq_is_differentiable():
     g = jax.grad(loss)(detector)
     assert g.shape == detector.shape
     assert bool(jnp.all(jnp.isfinite(g)))
+
+
+def test_lstsq_robust_to_operator_scale():
+    """Recover spectra regardless of the dispersion operator's absolute scale.
+
+    NormalCG injects NaN when its breakdown safeguard (proportional to the array
+    dtype's rcond) exceeds the normal operator's smallest eigenvalue. A real IFS
+    operator has det_vals of O(0.1), so in float32 that safeguard tripped and the
+    solve returned NaN even though the operator is well-conditioned. Scaling the
+    operator down here reproduces that small-eigenvalue regime in float64; column
+    equilibration inside lstsq keeps the solve well-scaled and scale-invariant.
+    """
+    r, n_wav = _renderer()
+    s = 1e-6  # shrink the operator so the un-equilibrated normal eigenvalues ~ s^2
+    rs = eqx.tree_at(
+        lambda m: (m.ir.det_vals, m.H_mono.data),
+        r,
+        (r.ir.det_vals * s, r.H_mono.data * s),
+    )
+    z_true = jax.random.uniform(jax.random.PRNGKey(7), (rs.ir.n_channels, n_wav))
+    detector = (rs.H_mono @ z_true.reshape(-1)).reshape(rs.ir.det_shape)
+    # Data is ~s here, so converge on the relative tolerance only (atol=0).
+    z_hat = lstsq(rs, detector, rtol=1e-8, atol=0.0)
+    assert bool(jnp.all(jnp.isfinite(z_hat)))
+    assert jnp.allclose(z_hat, z_true, atol=1e-6)
 
 
 def test_lstsq_recovers_sharp_dip_spaxel():
