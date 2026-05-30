@@ -7,7 +7,7 @@ name = "coronachrome"
 description = "Multi-wavelength analysis tools for coronagraphic direct imaging."
 authors = [{ name = "Corey Spohn", email = "corey.a.spohn@nasa.gov" }]
 dynamic = ['readme', 'version']
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 classifiers = [
     "Development Status :: 1 - Planning",
@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
-dependencies = ["numpy"]
+dependencies = ["jax", "equinox", "lineax", "optixstuff"]
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
