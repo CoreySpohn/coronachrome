@@ -1,0 +1,141 @@
+# The coronachrome model
+
+This page explains how coronachrome represents a lenslet IFS, why it compiles the
+instrument into a single linear operator, and how the forward model and the
+extraction both use that operator.
+
+## What a lenslet IFS does
+
+An integral field spectrograph (IFS) records a spectrum at every point in an image.
+A lenslet IFS does this with a grid of tiny lenses, the lenslet array, placed in the
+focal plane. Each lenslet collects the light from its small patch of the field, and
+a disperser spreads that light into a short spectrum, the **micro-spectrum**, which
+lands on the detector as a small streak. The micro-spectra are tilted relative to
+the detector grid so that neighboring streaks do not sit on top of each other.
+
+The detector image is therefore a grid of micro-spectra, one per lenslet. A single
+lenslet's spectrum is called a **spaxel**, a spatial pixel that carries a spectrum.
+The small image that one lenslet forms at one wavelength, before it is smeared into
+the streak, is called a **PSFlet**. Recovering the per-lenslet spectra from the raw
+detector image is **extraction**, and the central difficulty in extraction is
+**cross-talk**, the partial overlap between adjacent micro-spectra.
+
+## The IFS is a linear operator
+
+The idea behind coronachrome is that the forward model is linear. A unit of flux at
+a given lenslet and wavelength always lands on the same detector pixels in the same
+pattern, its PSFlet, regardless of how bright it is. Doubling the input doubles the
+output, and the contributions from different lenslets and wavelengths add. A linear
+map between two finite vectors is a matrix, so the whole forward model can be written
+as one matrix multiply,
+
+$$ y = H\,z, $$
+
+where $z$ is the stack of per-lenslet spectra, $y$ is the flattened detector image,
+and $H$ encodes the instrument geometry. $H$ is very sparse: each (lenslet,
+wavelength) contributes only the handful of detector pixels under its PSFlet, so
+almost every entry of $H$ is zero.
+
+Writing the IFS this way is what makes coronachrome fast and invertible. The forward
+model is a single sparse matrix-vector product. Extraction is the inverse problem for
+the same matrix. There are no per-lenslet Python loops at runtime. The
+[mathematical formulation](mathematical_formulation) page derives $H$, its sparse
+structure, and the inverse problem in full.
+
+## The intermediate representation
+
+$H$ is large and depends on many geometric details: lenslet positions, the
+dispersion law, the PSFlet shape at each wavelength. Rebuilding it from scratch on
+every call would be slow, and it would tangle the geometry with the linear algebra.
+coronachrome instead compiles the geometry into an **intermediate representation**
+(IR). The term is borrowed from compilers: an IR is a precomputed, machine-friendly
+description that sits between the human-facing instrument parameters and the sparse
+matrix the renderer ultimately runs.
+
+The IR is {class}`~coronachrome.SpatialChannelIR`. A **channel** is one (lenslet,
+wavelength) pair, that is, one column of $H$. For every channel the IR stores two
+things:
+
+1. **Spatial source**: which focal-plane pixels feed this lenslet, and with what
+   weights. coronachrome uses a bilinear footprint at the lenslet center.
+2. **Detector footprint**: which detector pixels this channel lands on (its dispersed
+   PSFlet), and with what per-pixel weights.
+
+Given those two tables, assembling $H$ is mechanical. The IR is plain array data,
+built once and eagerly by {func}`~coronachrome.build_ir`. Because the same $H$ serves
+both the forward model and the extraction, the IR is built a single time and reused
+in both directions.
+
+`build_ir` dispatches on the **disperser descriptor**, the human-facing object that
+names the instrument: lenslet pitch, dispersion coefficients, PSFlet kind, grid kind.
+A lenslet disperser is the supported descriptor; a new IFS geometry can register its
+own builder without touching the renderer.
+
+### The geometry pieces
+
+The descriptor is turned into the IR by three small models:
+
+- **Grids.** The lenslet positions, on a square or hexagonal grid.
+- **Dispersion.** Where each lenslet's micro-spectrum lands as a function of
+  wavelength. A lenslet centroid is rotated by the lenslet angle, scaled, and shifted
+  by a wavelength-dependent offset. The offset is a polynomial in
+  $u = \log(\lambda / \lambda_\mathrm{ref})$, which generalizes CRISPY's hardcoded
+  WFIRST `distort` law (whose linear case is the default).
+- **PSFlets.** The shape of one lenslet's image at one wavelength. coronachrome uses
+  analytic Gaussian or Moffat profiles, broadened along the dispersion direction by a
+  per-wavelength **line-spread-function (LSF) smear**, the blur that comes from
+  integrating a finite wavelength bin into one detector sample.
+
+## Forward model
+
+The renderer ({class}`~coronachrome.IFSRenderer`) assembles the IR into a sparse
+matrix `H_mono`, stored in JAX's `BCOO` (batched coordinate) sparse format, and runs
+the forward model as one matvec, $y = H\,z$. Here $z$ has shape
+`(n_channels, n_wav)` and $y$ is the detector image.
+
+Two equivalent forward implementations are provided and tested against each other:
+
+- `forward_spmv`, the single `BCOO` matrix-vector product.
+- `forward_streaming`, a per-wavelength scatter-add that accumulates each wavelength's
+  PSFlets into the detector.
+
+They give numerically identical results. The streaming form exists for differentiable
+hardware design, where one wants gradients with respect to the dispersion geometry
+itself, not only with respect to the spectra.
+
+## Extraction
+
+Extraction recovers the spectra $z$ from a detector image $y$ by inverting the same
+operator $H$. It needs a noise model: a per-pixel inverse-variance weight $W = 1/N$,
+where $N$ is the expected variance at each detector pixel, supplied by the optixstuff
+detector. coronachrome provides three tiers, from fast and approximate to slower and
+statistically complete:
+
+- **Matched filter** ({func}`~coronachrome.matched_filter`). Correlates the detector
+  with each channel's PSFlet, $H^\top y$, normalized by the per-channel norm. It is
+  fast and differentiable but biased, because it ignores cross-talk: flux from a
+  neighbor's micro-spectrum leaks into the estimate.
+- **Least squares** ({func}`~coronachrome.lstsq`). Solves
+  $\min_z \lVert \sqrt{W}\,(Hz - y) \rVert^2$, the noise-weighted best fit. Accounting
+  for the overlap between channels removes the cross-talk bias. It is solved
+  matrix-free with a conjugate-gradient method (lineax NormalCG); a weight-aware
+  rescaling of the columns keeps the solve well conditioned, including in float32.
+- **Covariance and error bars** ({func}`~coronachrome.spectrum_covariance`,
+  {func}`~coronachrome.spectrum_errorbars`). The uncertainty on the least-squares
+  spectrum is the Gauss-Markov covariance $(H^\top W H)^{-1}$. coronachrome returns it
+  per spaxel as an `n_wav` by `n_wav` block, whose diagonal is the per-wavelength
+  one-sigma error bar. These error bars scale with wavelength through the detector
+  noise: where the source is bright the shot noise is larger, so the error bar is
+  larger.
+
+## Detector and precision
+
+coronachrome stops at a noiseless detector rate map. The noise itself, and the
+per-pixel variance $N$ that the extraction weights use, come from the optixstuff
+detector ({meth}`optixstuff.AbstractDetector.readout` and
+{meth}`optixstuff.AbstractDetector.noise_variance`). Keeping the detector outside
+coronachrome lets the same noise model serve coronagraphoto and coronachrome alike.
+
+The stack runs in float32 by default, and in float64 when the global JAX `x64` flag
+is set. The extraction is float32-safe by construction, through the column rescaling
+mentioned above.
