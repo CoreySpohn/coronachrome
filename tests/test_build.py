@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import pytest
 from optixstuff.disperser import LensletDisperser
 
-from coronachrome.build import build_ir
+from coronachrome.build import _resampling_footprints, build_ir
 from coronachrome.ir import SpatialChannelIR
 
 
@@ -99,3 +99,81 @@ def test_off_detector_footprints_warn():
     lam = jnp.linspace(640.0, 680.0, 5)
     with pytest.warns(UserWarning, match="off the detector"):
         build_ir(disp, lam, fp_shape=(64, 64))
+
+
+def test_resampling_footprint_conserves_flux():
+    """A fully interior lenslet integrates its cell area (weights sum to cell^2)."""
+    fp_shape = (64, 64)
+    cell = 6.0
+    idx, w = _resampling_footprints(
+        jnp.array([32.0]), jnp.array([32.0]), 0.0, cell, fp_shape, supersample=8
+    )
+    assert idx.shape == w.shape
+    assert idx.shape[0] == 1
+    assert jnp.allclose(w.sum(), cell**2, rtol=1e-6)
+    cube = jnp.ones(fp_shape).reshape(-1)
+    z = (cube[idx[0]] * w[0]).sum()
+    assert jnp.allclose(z, cell**2, rtol=1e-6)
+
+
+def test_resampling_footprint_axis_aligned_box():
+    """Cover exactly the cell block and integrate to the cell area at angle 0.
+
+    Uses an integer cell on a pixel-centered lenslet, with supersample=7 (not a
+    divisor of the cell) so the per-pixel weights are deliberately non-uniform;
+    only the robust invariants are asserted.
+    """
+    fp_shape = (32, 32)
+    cell = 5.0
+    _idx, w = _resampling_footprints(
+        jnp.array([16.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=7
+    )
+    nz = w[0][w[0] > 1e-6]
+    assert nz.size == 25  # 5 x 5 axis-aligned block
+    assert jnp.allclose(nz.sum(), cell**2, rtol=1e-6)  # flux-conserving
+
+
+def test_resampling_footprint_multi_lenslet():
+    """Vmap handles several lenslets independently (shapes and per-lenslet flux)."""
+    fp_shape = (48, 48)
+    cell = 5.0
+    cx = jnp.array([24.0, 0.0])  # one interior, one at the focal-plane edge
+    cy = jnp.array([24.0, 24.0])
+    idx, w = _resampling_footprints(cx, cy, 0.0, cell, fp_shape, supersample=8)
+    assert idx.shape == w.shape
+    assert idx.shape[0] == 2
+    # interior conserves the cell area; the edge lenslet loses its off-grid part
+    assert jnp.allclose(w[0].sum(), cell**2, rtol=1e-6)
+    assert float(w[1].sum()) < cell**2
+
+
+def test_resampling_footprint_rotation_moves_corners():
+    """A 45 deg rotation widens the footprint bounding box vs axis-aligned."""
+    fp_shape = (64, 64)
+    cell = 8.0
+    _, w0 = _resampling_footprints(
+        jnp.array([32.0]), jnp.array([32.0]), 0.0, cell, fp_shape, supersample=8
+    )
+    _, w45 = _resampling_footprints(
+        jnp.array([32.0]),
+        jnp.array([32.0]),
+        float(jnp.pi / 4),
+        cell,
+        fp_shape,
+        supersample=8,
+    )
+    assert jnp.allclose(w0.sum(), w45.sum(), rtol=1e-6)
+    assert int((w45[0] > 1e-6).sum()) > int((w0[0] > 1e-6).sum())
+
+
+def test_resampling_footprint_masks_off_grid():
+    """A lenslet straddling the edge loses the off-grid part of its cell."""
+    fp_shape = (32, 32)
+    cell = 6.0
+    _, w_in = _resampling_footprints(
+        jnp.array([16.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=8
+    )
+    _, w_edge = _resampling_footprints(
+        jnp.array([1.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=8
+    )
+    assert float(w_edge.sum()) < float(w_in.sum())

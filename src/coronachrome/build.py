@@ -54,6 +54,67 @@ def _bilinear_footprints(cx, cy, fp_shape):
     return idx, ws
 
 
+def _resampling_footprints(cx, cy, angle_rad, cell_px, fp_shape, supersample=4):
+    """Flux-conserving, rotated focal-plane footprints for every lenslet.
+
+    Each lenslet integrates the focal-plane flux over its square cell of side
+    ``cell_px`` (focal-plane pixels), rotated by ``angle_rad`` about the lenslet
+    center. The cell is supersampled on an ``S x S`` grid; each subpoint is
+    rotated, binned to its nearest focal-plane pixel, and contributes area
+    ``(cell_px / S) ** 2``. The footprint is a fixed window of ``K = (2R + 1) ** 2``
+    source pixels per lenslet, with zero weight where the cell does not reach or
+    the pixel is off the focal plane. Weights sum to ``cell_px ** 2`` for a fully
+    interior lenslet, so a uniform input integrates to the cell area (flux
+    conservation), unlike the partition-of-unity bilinear footprint.
+
+    Args:
+        cx: ``(n_channels,)`` lenslet x-centers in focal-plane pixels.
+        cy: ``(n_channels,)`` lenslet y-centers in focal-plane pixels.
+        angle_rad: lenslet-grid rotation angle (radians).
+        cell_px: lenslet cell side in focal-plane pixels (the lenslet pitch).
+        fp_shape: focal-plane ``(ny, nx)``.
+        supersample: subpoints per cell axis (``S``); accuracy grows with ``S``.
+
+    Returns:
+        Tuple ``(idx, weights)``, each ``(n_channels, K)``: flat focal-plane
+        indices and flux-conserving weights, out-of-bounds masked to zero weight.
+    """
+    ny, nx = fp_shape
+    s = int(supersample)
+    r = int(jnp.ceil(cell_px * (2.0**0.5 / 2.0))) + 1
+    span = 2 * r + 1
+
+    wo = jnp.arange(-r, r + 1)
+    wdy, wdx = jnp.meshgrid(wo, wo, indexing="ij")
+    wdx = wdx.reshape(-1)
+    wdy = wdy.reshape(-1)
+
+    u = (jnp.arange(s) + 0.5) / s * cell_px - cell_px / 2.0
+    lx, ly = jnp.meshgrid(u, u, indexing="ij")
+    lx = lx.reshape(-1)
+    ly = ly.reshape(-1)
+    ca, sa = jnp.cos(angle_rad), jnp.sin(angle_rad)
+    rx = ca * lx - sa * ly
+    ry = sa * lx + ca * ly
+    sub_w = (cell_px / s) ** 2
+
+    def one_lenslet(cxi, cyi):
+        bx, by = jnp.round(cxi), jnp.round(cyi)
+        sdx = (jnp.round(cxi + rx) - bx).astype(jnp.int32)
+        sdy = (jnp.round(cyi + ry) - by).astype(jnp.int32)
+        in_win = (jnp.abs(sdx) <= r) & (jnp.abs(sdy) <= r)
+        widx = jnp.where(in_win, (sdy + r) * span + (sdx + r), 0)
+        win = jnp.zeros(span * span).at[widx].add(jnp.where(in_win, sub_w, 0.0))
+        sx = (bx + wdx).astype(jnp.int32)
+        sy = (by + wdy).astype(jnp.int32)
+        valid = (sx >= 0) & (sx < nx) & (sy >= 0) & (sy < ny)
+        win = jnp.where(valid, win, 0.0)
+        src = jnp.clip(sy * nx + sx, 0, ny * nx - 1).astype(jnp.int32)
+        return src, win
+
+    return jax.vmap(one_lenslet)(cx, cy)
+
+
 @build_ir.register
 def _(
     disperser: LensletDisperser,
