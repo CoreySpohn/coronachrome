@@ -57,7 +57,10 @@ wavelength) pair, that is, one column of $H$. For every channel the IR stores tw
 things:
 
 1. **Spatial source**: which focal-plane pixels feed this lenslet, and with what
-   weights. coronachrome uses a bilinear footprint at the lenslet center.
+   weights. coronachrome integrates the flux over each lenslet's (rotated) cell, a
+   flux-conserving footprint computed offline by supersampling the cell. The
+   integration is baked into the sparse weights, so the runtime spatial sampling
+   stays a single gather with no image resampling.
 2. **Detector footprint**: which detector pixels this channel lands on (its dispersed
    PSFlet), and with what per-pixel weights.
 

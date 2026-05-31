@@ -74,7 +74,7 @@ inverse of the same $H$ (`lstsq`), and `intOptimalExtract` is the matched filter
 
 | CRISPY | coronachrome | relation |
 |---|---|---|
-| `processImagePlane` (rotate + rebin to lenslets) | spatial sampling $z = Sf$ | same role, $f \to z$; different sampling kernel |
+| `processImagePlane` (rotate + rebin to lenslets) | spatial sampling $z = Sf$ | same flux-conserving rotated rebin; baked into $H$ offline |
 | `propagateLenslets` loop | $y = Hz$ (`forward_spmv`) | identical operator; the loop is the matvec |
 | `hires_arrs` PSFlet templates | analytic Gaussian / Moffat PSFlet | same role, the column shape; different source |
 | `distort` / wavecal centroids | dispersion-polynomial centroids | identical for the analytic case (cross-checked) |
@@ -93,9 +93,11 @@ where the physics differs.
   PSFlet with a line-spread-function smear, the same shape at every field point. This
   changes the columns of $H$, not the structure of the model. Reading FITS templates
   is planned.
-- **Spatial sampling ($S$).** CRISPY rotates the whole focal plane by `philens` and
-  flux-conservatively rebins it to lenslet sampling. coronachrome samples the focal
-  plane at each lenslet center with a bilinear footprint.
+- **Spatial sampling ($S$).** Both integrate each lenslet's flux over its rotated
+  cell. CRISPY does this at runtime by rotating the whole focal plane by `philens`
+  and flux-conservatively rebinning (a `map_coordinates` per wavelength).
+  coronachrome bakes the same rotated, flux-conserving rebin into the sparse
+  footprint offline, so the runtime is a single gather with no `map_coordinates`.
 - **Centroids ($c_\ell(\lambda_w)$).** CRISPY can use a fitted wavelength solution or
   the analytic `distort` model. coronachrome uses the analytic dispersion polynomial
   in $\log(\lambda / \lambda_\mathrm{ref})$, whose centroids reproduce CRISPY's
@@ -126,5 +128,5 @@ and `distort` form directly, and match to numerical precision. The forward and
 inverse pair is checked internally by round-trip recovery: inject a spectrum, run the
 forward model, extract, and compare. A full end-to-end comparison against CRISPY
 output for an identical scene is not yet done. It is the main remaining parity check,
-and it is governed by the PSFlet-shape and spatial-sampling differences above rather
-than by the dispersion geometry.
+and it is now governed mainly by the PSFlet-shape difference, since the spatial
+sampling is flux-conserving and rotated on both sides.
