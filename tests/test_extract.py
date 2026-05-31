@@ -141,6 +141,19 @@ def test_spectrum_covariance_matches_dense_block():
         assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
 
 
+def test_spectrum_covariance_many_channels_matches_dense():
+    """The lax.map path matches dense (H^T W H)^-1 blocks across many channels."""
+    r, n_wav = _renderer()
+    chans = jnp.array([0, 5, 11, 18, r.ir.n_channels - 1])
+    ainv = np.linalg.inv(_dense_normal(r, None))
+    cov = np.asarray(spectrum_covariance(r, channels=chans))
+    assert cov.shape == (len(chans), n_wav, n_wav)
+    for i, ch in enumerate(np.asarray(chans)):
+        base = int(ch) * n_wav
+        ref = ainv[base : base + n_wav, base : base + n_wav]
+        assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
+
+
 def test_spectrum_errorbars_is_sqrt_diag():
     """Error bars equal sqrt of the covariance block diagonal."""
     r, _n_wav = _renderer()

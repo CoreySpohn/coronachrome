@@ -122,14 +122,20 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     def block_for_channel(ch):
         cols = ch * n_wav + jnp.arange(n_wav)
         # xp[j] = (D H^T W H D)^-1 e_{cols[j]} ; (n_wav, ncw)
-        xp = jax.vmap(solve_unit)(cols)
+        xp = jax.lax.map(solve_unit, cols)
         # (equilibrated inverse) block [i, j] = xp[j][cols[i]]
         block_p = xp[:, cols].T
         dch = d[cols]
         # undo equilibration: Cov_z = D (.)^-1 D
         return dch[:, None] * block_p * dch[None, :]
 
-    return jax.vmap(block_for_channel)(jnp.asarray(channels))
+    # lax.map (not vmap) over channels and unit columns: each block is an
+    # iterative CG solve, and vmapping a solver batches its whole while-loop into
+    # one program whose compile time and memory grow with the batch (minutes even
+    # for one spaxel). lax.map compiles a single solve body and loops it, keeping
+    # compilation O(1) and memory bounded, at the cost of running the solves
+    # sequentially -- the right trade for an expensive, iterative body.
+    return jax.lax.map(block_for_channel, jnp.asarray(channels))
 
 
 def spectrum_errorbars(renderer, weights=None, channels=None, rtol=1e-6, atol=1e-6):
