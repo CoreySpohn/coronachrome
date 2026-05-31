@@ -122,6 +122,7 @@ def _(
     fp_shape,
     fp_px_per_lenslet=1.0,
     half=3,
+    supersample=4,
 ):
     """Build a SpatialChannelIR from a LensletDisperser."""
     lam = jnp.asarray(wavelengths_nm, dtype=float)
@@ -135,11 +136,17 @@ def _(
     scale = disperser.pitch_m / disperser.pixsize_m
     ny, nx = disperser.detector_shape
 
-    # Spatial sampling: bilinear footprints for all channels at once.
+    # Spatial sampling: flux-conserving footprints over each lenslet's cell. The
+    # lenslet grid is rotated by the lenslet angle in the focal plane, matching
+    # the rotation applied to the detector centroids below.
     fx0, fy0 = fp_shape[1] / 2.0, fp_shape[0] / 2.0
-    cx = fx0 + positions[:, 0] * fp_px_per_lenslet
-    cy = fy0 + positions[:, 1] * fp_px_per_lenslet
-    spatial_src, spatial_w = _bilinear_footprints(cx, cy, fp_shape)
+    ca, sa = jnp.cos(disperser.angle_rad), jnp.sin(disperser.angle_rad)
+    px, py = positions[:, 0], positions[:, 1]
+    cx = fx0 + fp_px_per_lenslet * (ca * px - sa * py)
+    cy = fy0 + fp_px_per_lenslet * (sa * px + ca * py)
+    spatial_src, spatial_w = _resampling_footprints(
+        cx, cy, disperser.angle_rad, fp_px_per_lenslet, fp_shape, supersample
+    )
 
     # Detector centroids (n_channels, n_wav) and PSFlet footprint offsets (n_psf,).
     coeffs, lam_ref = disperser.dispersion_coeffs, disperser.lam_ref_nm

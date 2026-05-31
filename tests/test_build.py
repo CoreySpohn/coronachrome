@@ -177,3 +177,22 @@ def test_resampling_footprint_masks_off_grid():
         jnp.array([1.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=8
     )
     assert float(w_edge.sum()) < float(w_in.sum())
+
+
+def test_build_ir_spatial_footprint_is_flux_conserving():
+    """Every lenslet's spatial weights sum to the cell area (fp_px^2).
+
+    For this small grid on a 64x64 focal plane every lenslet is interior, so
+    each integrates a full cell. fp_px != 1 is what makes the test
+    discriminating: the old bilinear point-sample summed to 1 for any cell size.
+    """
+    fp_px = 5.0
+    ir = build_ir(
+        _disp(),
+        jnp.linspace(600.0, 700.0, 4),
+        fp_shape=(64, 64),
+        fp_px_per_lenslet=fp_px,
+    )
+    sums = ir.spatial_w.sum(axis=1)
+    assert jnp.allclose(sums, fp_px**2, rtol=1e-3)
+    assert bool(jnp.all(sums <= fp_px**2 + 1e-6))
