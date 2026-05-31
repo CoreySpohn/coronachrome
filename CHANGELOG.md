@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.0](https://github.com/CoreySpohn/coronachrome/compare/v0.1.0...v0.2.0) (2026-05-31)
+
+
+### Features
+
+* **build:** add flux-conserving rotated lenslet footprint builder ([3d0a430](https://github.com/CoreySpohn/coronachrome/commit/3d0a43072dc4d4991c7a1b2f654d75436c0e28ba))
+* **build:** flux-conserving rotated spatial sampling in build_ir ([c23c4fe](https://github.com/CoreySpohn/coronachrome/commit/c23c4fedc1fb9de828fddbd3e6c88b9ed74c9488))
+* **extract:** optional Tikhonov damping in lstsq + precision docs ([d6700da](https://github.com/CoreySpohn/coronachrome/commit/d6700da0590ea9968510a49d786921d6d5294a13))
+
+
+### Performance Improvements
+
+* **extract:** lax.map over channels in spectrum_covariance ([ae1655f](https://github.com/CoreySpohn/coronachrome/commit/ae1655fcff136558a681483f24d6e878d6d6b7e3))
+
 ## [0.1.0](https://github.com/CoreySpohn/coronachrome/compare/v0.0.1...v0.1.0) (2026-05-30)
 
 
