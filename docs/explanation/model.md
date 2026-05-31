@@ -137,14 +137,18 @@ statistically complete:
   $\min_z \lVert \sqrt{W}\,(Hz - y) \rVert^2$, the noise-weighted best fit. Accounting
   for the overlap between channels removes the cross-talk bias. It is solved
   matrix-free with a conjugate-gradient method (lineax NormalCG); a weight-aware
-  rescaling of the columns keeps the solve well conditioned, including in float32.
+  rescaling of the columns equilibrates the normal operator to a unit diagonal so the
+  solve stays well scaled. An optional Tikhonov `damping` regularizes near-degenerate
+  cases (see precision below).
 - **Covariance and error bars** ({func}`~coronachrome.spectrum_covariance`,
   {func}`~coronachrome.spectrum_errorbars`). The uncertainty on the least-squares
   spectrum is the Gauss-Markov covariance $(H^\top W H)^{-1}$. coronachrome returns it
   per spaxel as an `n_wav` by `n_wav` block, whose diagonal is the per-wavelength
   one-sigma error bar. These error bars scale with wavelength through the detector
   noise: where the source is bright the shot noise is larger, so the error bar is
-  larger.
+  larger. The blocks are computed with `lax.map` over spaxels (one CG solve compiled
+  and looped, rather than a `vmap` that would compile the whole batched solver at
+  once).
 
 ## Detector and precision
 
@@ -155,5 +159,11 @@ detector ({meth}`optixstuff.AbstractDetector.readout` and
 coronachrome lets the same noise model serve coronagraphoto and coronachrome alike.
 
 The stack runs in float32 by default, and in float64 when the global JAX `x64` flag
-is set. The extraction is float32-safe by construction, through the column rescaling
-mentioned above.
+is set. The forward model, the matched filter, and a well-sampled least-squares
+extraction are float32-safe even for large lenslet grids, helped by the column
+equilibration above. Two cases need more care. An over-sampled spectrum (more
+wavelengths than the micro-spectrum resolves) makes neighboring columns of $H$
+near-duplicate, so the normal equations turn near-singular and float32 NormalCG can
+break down; reduce the wavelength count, set the global `x64` flag, or raise the
+`damping`. The covariance forms the normal operator explicitly, which squares the
+conditioning, so in practice it should be run under `x64`.

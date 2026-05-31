@@ -113,6 +113,42 @@ def test_lstsq_robust_to_operator_scale():
     assert jnp.allclose(z_hat, z_true, atol=1e-6)
 
 
+def test_lstsq_damping_matches_dense_tikhonov():
+    """Damped lstsq equals the dense equilibrated Tikhonov solution.
+
+    Solves z = D (D H^T W H D + damping I)^-1 D H^T W y, with D the column
+    equilibration; the closed form is the reference.
+    """
+    r, n_wav = _renderer()
+    ncw = r.ir.n_channels * n_wav
+    z_true = jax.random.uniform(jax.random.PRNGKey(5), (r.ir.n_channels, n_wav))
+    detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
+    y = np.asarray(detector).reshape(-1)
+    damping = 1e-2
+
+    hd = np.asarray(r.H_mono.todense())
+    wdiag = (hd**2).sum(axis=0)  # diag(H^T H), W = I here
+    d = 1.0 / np.sqrt(wdiag)
+    dmat = d[:, None] * (hd.T @ hd) * d[None, :]  # D H^T H D (unit diagonal)
+    rhs = d * (hd.T @ y)
+    zp = np.linalg.solve(dmat + damping * np.eye(ncw), rhs)
+    z_ref = (d * zp).reshape(r.ir.n_channels, n_wav)
+
+    z_hat = lstsq(r, detector, damping=damping)
+    assert jnp.allclose(z_hat, z_ref, rtol=1e-4, atol=1e-6)
+
+
+def test_lstsq_damping_shrinks_solution():
+    """Positive damping biases the recovered spectrum toward zero (Tikhonov)."""
+    r, n_wav = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(6), (r.ir.n_channels, n_wav))
+    detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
+    z0 = lstsq(r, detector, damping=0.0)
+    z1 = lstsq(r, detector, damping=1e-1)
+    assert float(jnp.linalg.norm(z1)) < float(jnp.linalg.norm(z0))
+    assert jnp.allclose(z0, z_true, atol=1e-4)  # undamped still recovers truth
+
+
 def test_lstsq_recovers_sharp_dip_spaxel():
     """A sharp absorption dip (O2-like) at one spaxel is recovered by lstsq."""
     r, n_wav = _renderer(n_wav=15)

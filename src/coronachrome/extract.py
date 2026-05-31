@@ -48,15 +48,43 @@ def _equilibration(renderer, weights):
     return w, d
 
 
-def lstsq(renderer, detector, weights=None, rtol=1e-6, atol=1e-6):
+def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     """Noise-weighted least-squares spectra via lineax NormalCG (matrix-free).
 
-    Solves ``min_z || sqrt(w) * (H_mono z - y) ||^2`` where ``z`` is the
-    flattened (n_channels, n_wav) spectra and ``y`` is the flattened detector.
-    ``weights`` is a per-detector-pixel weight (default uniform); pass
-    ``1 / N`` (N the per-pixel noise variance) for noise-weighted extraction.
-    Returns z_hat of shape (n_channels, n_wav). Differentiable through the
-    solve with numerically stable gradients.
+    Solves ``min_z || sqrt(w) * (H_mono z - y) ||^2 + damping * || z_eq ||^2``
+    where ``z`` is the flattened (n_channels, n_wav) spectra, ``y`` is the
+    flattened detector, and ``z_eq`` is ``z`` in the column-equilibrated
+    coordinates (so ``damping`` is relative to the unit-diagonal normal
+    operator). ``weights`` is a per-detector-pixel weight (default uniform);
+    pass ``1 / N`` (N the per-pixel noise variance) for noise-weighted
+    extraction. Returns z_hat of shape (n_channels, n_wav). Differentiable
+    through the solve with numerically stable gradients.
+
+    Precision and conditioning: the forward model and this solve run in the
+    stack's native precision (float32 by default). A well-sampled extraction
+    (the number of wavelengths matched to the micro-spectrum's resolving power)
+    is float32-safe even for large lenslet grids. An over-sampled spectrum makes
+    neighbouring columns of ``H`` near-duplicate, so the normal equations become
+    near-singular and float32 NormalCG can break down (non-finite); recover by
+    reducing the wavelength count, enabling x64 (the global ``jax_enable_x64``
+    flag), or raising ``damping``. The covariance path
+    (:func:`spectrum_covariance`) squares the conditioning and in practice needs
+    x64.
+
+    Args:
+        renderer: An ``IFSRenderer`` holding the dispersion operator.
+        detector: The dispersed detector image.
+        weights: Per-detector-pixel weight (inverse noise variance), default
+            uniform.
+        damping: Tikhonov regularization on the equilibrated spectra, relative
+            to the unit-diagonal normal operator. ``0`` (default) is the plain
+            least-squares estimate; a small positive value trades a little bias
+            for stability on ill-conditioned (over-sampled) extractions.
+        rtol: CG relative tolerance.
+        atol: CG absolute tolerance.
+
+    Returns:
+        Extracted spectra of shape ``(n_channels, n_wav)``.
     """
     ir = renderer.ir
     ncw = ir.n_channels * ir.n_wav
@@ -65,8 +93,21 @@ def lstsq(renderer, detector, weights=None, rtol=1e-6, atol=1e-6):
     w, d = _equilibration(renderer, weights)
     sw = jnp.sqrt(w)
     z_struct = eval_shape(lambda: jnp.zeros(ncw, dtype=y.dtype))
-    operator = lx.FunctionLinearOperator(lambda zp: sw * (h_mono @ (d * zp)), z_struct)
-    sol = lx.linear_solve(operator, sw * y, solver=lx.NormalCG(rtol=rtol, atol=atol))
+    if damping > 0.0:
+        # Augment A -> [A; sqrt(damping) I], b -> [b; 0] so NormalCG solves the
+        # Tikhonov problem while keeping its (square-root) conditioning advantage
+        # over forming H^T W H explicitly.
+        sd = jnp.sqrt(jnp.asarray(damping, dtype=y.dtype))
+        operator = lx.FunctionLinearOperator(
+            lambda zp: jnp.concatenate([sw * (h_mono @ (d * zp)), sd * zp]), z_struct
+        )
+        rhs = jnp.concatenate([sw * y, jnp.zeros(ncw, dtype=y.dtype)])
+    else:
+        operator = lx.FunctionLinearOperator(
+            lambda zp: sw * (h_mono @ (d * zp)), z_struct
+        )
+        rhs = sw * y
+    sol = lx.linear_solve(operator, rhs, solver=lx.NormalCG(rtol=rtol, atol=atol))
     return (d * sol.value).reshape(ir.n_channels, ir.n_wav)
 
 
@@ -83,7 +124,15 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     Matrix-free: for each channel it runs ``n_wav`` symmetric-positive-definite
     CG solves against the same weight-equilibrated normal operator as
     :func:`lstsq`, so it never materializes ``H^T W H`` and scales to large IFS
-    grids when only a few spaxels are of interest.
+    grids when only a few spaxels are of interest. The channels and their unit
+    columns are looped with ``lax.map`` (not ``vmap``): vmapping an iterative
+    solver batches its whole while-loop into one program whose compile time and
+    memory grow with the batch, so ``lax.map`` keeps compilation bounded.
+
+    Precision: this forms the (equilibrated) normal operator explicitly, which
+    squares the condition number, so the CG solves are markedly less
+    float32-stable than :func:`lstsq`. Run the covariance under x64 (the global
+    ``jax_enable_x64`` flag) for reliable results.
 
     Args:
         renderer: An ``IFSRenderer``.
