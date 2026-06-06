@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/CoreySpohn/coronachrome/compare/v0.2.0...v0.3.0) (2026-06-06)
+
+
+### Features
+
+* Add psflet reference wavelength for accurate dispersion ([6d32de3](https://github.com/CoreySpohn/coronachrome/commit/6d32de3af63a56837304dc50495523687e1930d2))
+
 ## [0.2.0](https://github.com/CoreySpohn/coronachrome/compare/v0.1.0...v0.2.0) (2026-05-31)
 
 
