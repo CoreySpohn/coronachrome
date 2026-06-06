@@ -124,7 +124,16 @@ def _(
     half=3,
     supersample=4,
 ):
-    """Build a SpatialChannelIR from a LensletDisperser."""
+    """Build a SpatialChannelIR from a LensletDisperser.
+
+    The PSFlet core width (``disperser.psflet_params[0]``, in detector pixels)
+    scales linearly with wavelength about ``disperser.psflet_ref_nm`` -- a
+    diffraction-limited spot grows as ``lambda f / D``, so at fixed pixel scale
+    its pixel width is proportional to wavelength. The fixed ``half`` footprint
+    (``(2 * half + 1)`` per side) must therefore be wide enough for the widest
+    PSFlet in the band; otherwise the long-wavelength spot is truncated (its
+    footprint still renormalizes to unit flux, but the wings are clipped).
+    """
     lam = jnp.asarray(wavelengths_nm, dtype=float)
     n_wav = int(lam.shape[0])
     positions = (
@@ -172,14 +181,21 @@ def _(
         - dispersion_px(coeffs, lam_ref, lam - 0.5 * dlam)
     )
 
-    # PSFlet weights for every (channel, wavelength, footprint pixel). vmap over
-    # the wavelength axis so each wavelength's smear width applies.
-    def psf_one_wav(dx_w, dy_w, smear_w):
-        return psflet_weights(
-            dx_w, dy_w, disperser.psflet_kind, disperser.psflet_params, smear_w
-        )
+    # Diffraction scaling: the PSFlet core width (params[0], px) scales linearly
+    # with wavelength at a fixed detector pixel scale (spot size ~ lambda f / D),
+    # referenced to psflet_ref_nm. Trailing shape params (e.g. Moffat beta) are
+    # dimensionless and do not scale.
+    width_scale = lam / disperser.psflet_ref_nm
+    n_params = disperser.psflet_params.shape[0]
+    params_w = jnp.broadcast_to(disperser.psflet_params, (n_wav, n_params))
+    params_w = params_w.at[:, 0].multiply(width_scale)
 
-    g = jax.vmap(psf_one_wav, in_axes=(1, 1, 0), out_axes=1)(dx, dy, smear)
+    # PSFlet weights for every (channel, wavelength, footprint pixel). vmap over
+    # the wavelength axis so each wavelength's scaled width and smear apply.
+    def psf_one_wav(dx_w, dy_w, smear_w, params_one):
+        return psflet_weights(dx_w, dy_w, disperser.psflet_kind, params_one, smear_w)
+
+    g = jax.vmap(psf_one_wav, in_axes=(1, 1, 0, 0), out_axes=1)(dx, dy, smear, params_w)
 
     valid = (px >= 0) & (px < nx) & (py >= 0) & (py < ny)
     g = jnp.where(valid, g, 0.0)

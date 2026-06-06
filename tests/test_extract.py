@@ -32,6 +32,7 @@ def _renderer(n=6, n_wav=9, fp=(64, 64)):
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
         psflet_params=jnp.array([0.7]),
+        psflet_ref_nm=660.0,
         grid_kind="square",
         n_lenslets=n,
         psflet_kind="gaussian",

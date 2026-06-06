@@ -17,11 +17,97 @@ def _disp(n=6):
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
         psflet_params=jnp.array([0.7]),
+        psflet_ref_nm=660.0,
         grid_kind="square",
         n_lenslets=n,
         psflet_kind="gaussian",
         detector_shape=(256, 256),
     )
+
+
+def test_psflet_width_scales_linearly_with_wavelength():
+    """The analytic PSFlet core width grows linearly with wavelength.
+
+    A diffraction-limited spot scales as lambda f / D, so at a fixed detector
+    pixel scale a single PSFlet at 1000 nm is twice as wide as at 500 nm in both
+    axes. Zero dispersion is used so the LSF smear vanishes and both axes show
+    pure diffraction width.
+    """
+    disp = LensletDisperser(
+        pitch_m=174e-6,
+        pixsize_m=13e-6,
+        angle_rad=0.0,
+        lam_ref_nm=500.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([0.0]),  # no dispersion -> zero LSF smear
+        psflet_params=jnp.array([2.0]),
+        psflet_ref_nm=500.0,
+        grid_kind="square",
+        n_lenslets=1,
+        psflet_kind="gaussian",
+        detector_shape=(128, 128),
+    )
+    half = 20
+    lam = jnp.array([500.0, 1000.0])
+    ir = build_ir(disp, lam, fp_shape=(16, 16), half=half)
+
+    off = jnp.arange(-half, half + 1).astype(float)
+    ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
+    ddx, ddy = ddx.reshape(-1), ddy.reshape(-1)
+
+    def rms_widths(w):
+        weights = ir.det_vals[0, w]
+        wsum = weights.sum()
+        mx = (weights * ddx).sum() / wsum
+        my = (weights * ddy).sum() / wsum
+        sx = jnp.sqrt((weights * (ddx - mx) ** 2).sum() / wsum)
+        sy = jnp.sqrt((weights * (ddy - my) ** 2).sum() / wsum)
+        return sx, sy
+
+    sx500, sy500 = rms_widths(0)
+    sx1000, sy1000 = rms_widths(1)
+    assert jnp.allclose(sx1000 / sx500, 2.0, rtol=0.02)
+    assert jnp.allclose(sy1000 / sy500, 2.0, rtol=0.02)
+
+
+def test_moffat_scales_core_width_not_shape():
+    """Moffat alpha (params[0]) scales with wavelength; beta (params[1]) does not.
+
+    The second-moment width of a Moffat depends on both alpha and beta. If beta
+    were (wrongly) scaled too, the width ratio would not equal the wavelength
+    ratio; observing a 2x width ratio confirms only the core width scales.
+    """
+    disp = LensletDisperser(
+        pitch_m=174e-6,
+        pixsize_m=13e-6,
+        angle_rad=0.0,
+        lam_ref_nm=500.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([0.0]),
+        psflet_params=jnp.array([2.0, 3.0]),  # alpha=2 px, beta=3
+        psflet_ref_nm=500.0,
+        grid_kind="square",
+        n_lenslets=1,
+        psflet_kind="moffat",
+        detector_shape=(160, 160),
+    )
+    half = 40
+    ir = build_ir(disp, jnp.array([500.0, 1000.0]), fp_shape=(16, 16), half=half)
+    off = jnp.arange(-half, half + 1).astype(float)
+    ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
+    ddx, ddy = ddx.reshape(-1), ddy.reshape(-1)
+
+    def rms(w):
+        weights = ir.det_vals[0, w]
+        wsum = weights.sum()
+        sx = jnp.sqrt((weights * ddx**2).sum() / wsum)
+        sy = jnp.sqrt((weights * ddy**2).sum() / wsum)
+        return sx, sy
+
+    sx500, sy500 = rms(0)
+    sx1000, sy1000 = rms(1)
+    assert jnp.allclose(sx1000 / sx500, 2.0, rtol=0.03)
+    assert jnp.allclose(sy1000 / sy500, 2.0, rtol=0.03)
 
 
 def test_build_ir_returns_ir_with_expected_shapes():
@@ -69,6 +155,7 @@ def test_moffat_psflet_build_normalizes():
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
         psflet_params=jnp.array([1.5, 2.5]),
+        psflet_ref_nm=660.0,
         grid_kind="square",
         n_lenslets=6,
         psflet_kind="moffat",
@@ -91,6 +178,7 @@ def test_off_detector_footprints_warn():
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
         psflet_params=jnp.array([0.7]),
+        psflet_ref_nm=660.0,
         grid_kind="square",
         n_lenslets=8,
         psflet_kind="gaussian",
