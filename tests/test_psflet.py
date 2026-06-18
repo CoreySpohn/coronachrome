@@ -7,11 +7,7 @@ from coronachrome.psflet import gaussian_psflet, moffat_psflet, psflet_weights
 
 
 def test_pixel_integration_reduces_sampling_phase_bias():
-    """The integrated Gaussian's rendered width is far more stable.
-
-    Sub-pixel centroid phase impacts point sampling much more than pixel
-    integration, in the undersampled regime.
-    """
+    """Integrated Gaussian width is more stable than point sampling under phase bias."""
     sigma = 0.7
     half = 5
     off = jnp.arange(-half, half + 1).astype(float)
@@ -37,7 +33,7 @@ def test_pixel_integration_reduces_sampling_phase_bias():
 
 
 def test_gaussian_pixel_integral_matches_numerical():
-    """ERF Gaussian matches numerical integral up to normalization.
+    """Erf Gaussian matches numerical integral up to normalization.
 
     Compared to a fine numerical integral of the point profile.
     """
@@ -66,7 +62,7 @@ def test_gaussian_pixel_integral_is_symmetric():
 
 
 def test_gaussian_psflet_differentiable():
-    """ERF Gaussian is differentiable in sigma."""
+    """Erf Gaussian is differentiable in sigma."""
     g = jax.grad(lambda s: gaussian_psflet(jnp.array(0.3), jnp.array(0.2), s))(0.7)
     assert jnp.isfinite(g)
 
