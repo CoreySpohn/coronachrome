@@ -71,9 +71,22 @@ def test_gaussian_psflet_differentiable():
     assert jnp.isfinite(g)
 
 
-def test_moffat_peaks_at_origin():
-    """Moffat PSFlet evaluates to unity at the origin."""
-    assert jnp.allclose(moffat_psflet(jnp.array(0.0), jnp.array(0.0), 1.0, 2.5), 1.0)
+def test_moffat_quadrature_converges():
+    """Moffat at n_quad=5 matches a much finer quadrature, up to a constant."""
+    alpha, beta = 1.5, 2.5
+    off = jnp.arange(-3, 4).astype(float)
+    dy, dx = jnp.meshgrid(off, off, indexing="ij")
+    dx, dy = dx.reshape(-1), dy.reshape(-1)
+    coarse = moffat_psflet(dx, dy, alpha, beta, n_quad=5)
+    fine = moffat_psflet(dx, dy, alpha, beta, n_quad=41)
+    # n_quad=5 converges to ~1.0e-3 vs n_quad=41 (measured: 1.006e-3).
+    assert jnp.allclose(coarse / coarse.sum(), fine / fine.sum(), atol=2e-3)
+
+
+def test_moffat_psflet_differentiable():
+    """Moffat quadrature is differentiable in alpha."""
+    g = jax.grad(lambda a: moffat_psflet(jnp.array(0.3), jnp.array(0.2), a, 2.5))(1.5)
+    assert jnp.isfinite(g)
 
 
 def test_psflet_weights_shape_matches_footprint():

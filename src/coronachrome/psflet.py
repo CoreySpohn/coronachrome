@@ -31,9 +31,19 @@ def gaussian_psflet(dx, dy, sigma_px):
     return _gauss_axis_integral(dx, sigma_px) * _gauss_axis_integral(dy, sigma_px)
 
 
-def moffat_psflet(dx, dy, alpha_px, beta):
-    """Unnormalized 2D Moffat at offsets (dx, dy) [px]."""
-    return (1.0 + (dx**2 + dy**2) / alpha_px**2) ** (-beta)
+def moffat_psflet(dx, dy, alpha_px, beta, n_quad=5):
+    """2D Moffat integrated over the unit pixel centered at (dx, dy) [px].
+
+    No closed form, so the pixel is integrated by a midpoint-rule average over an
+    ``n_quad x n_quad`` sub-grid. An overall normalization constant is irrelevant
+    because ``build_ir`` renormalizes each footprint to unit flux.
+    """
+    sub = jnp.linspace(-0.5 + 0.5 / n_quad, 0.5 - 0.5 / n_quad, n_quad)
+    uu, vv = jnp.meshgrid(sub, sub, indexing="ij")
+    uu, vv = uu.reshape(-1), vv.reshape(-1)
+    r2 = (dx[..., None] + uu) ** 2 + (dy[..., None] + vv) ** 2
+    prof = (1.0 + r2 / alpha_px**2) ** (-beta)
+    return prof.mean(axis=-1)
 
 
 def psflet_weights(dx, dy, kind, params, smear_px, n_sub=5):

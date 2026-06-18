@@ -133,6 +133,9 @@ def _(
     (``(2 * half + 1)`` per side) must therefore be wide enough for the widest
     PSFlet in the band; otherwise the long-wavelength spot is truncated (its
     footprint still renormalizes to unit flux, but the wings are clipped).
+
+    PSFlets are pixel-integrated (the Gaussian via an erf pixel integral, the
+    Moffat via sub-pixel quadrature), not point-sampled at pixel centers.
     """
     lam = jnp.asarray(wavelengths_nm, dtype=float)
     n_wav = int(lam.shape[0])
