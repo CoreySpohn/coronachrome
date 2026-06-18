@@ -5,13 +5,30 @@ the spectrum centroid. The LSF is approximated by averaging the profile over
 ``n_sub`` centroid positions spanning the bin's spectral-pixel extent along x.
 """
 
+import math
+
 import jax
 import jax.numpy as jnp
+from jax.scipy.special import erf
+
+_SQRT2 = math.sqrt(2.0)
+
+
+def _gauss_axis_integral(t, sigma_px):
+    """Integral of the unit-area 1D Gaussian over the pixel [t - 0.5, t + 0.5]."""
+    upper = (t + 0.5) / (_SQRT2 * sigma_px)
+    lower = (t - 0.5) / (_SQRT2 * sigma_px)
+    return 0.5 * (erf(upper) - erf(lower))
 
 
 def gaussian_psflet(dx, dy, sigma_px):
-    """Unnormalized 2D Gaussian at offsets (dx, dy) [px]."""
-    return jnp.exp(-(dx**2 + dy**2) / (2.0 * sigma_px**2))
+    """2D Gaussian integrated over the unit pixel centered at (dx, dy) [px].
+
+    Pixel-integrated (erf) form, matching CRISPY ``imgtools.gausspsf``. An overall
+    normalization constant is dropped because ``build_ir`` renormalizes each
+    footprint to unit flux.
+    """
+    return _gauss_axis_integral(dx, sigma_px) * _gauss_axis_integral(dy, sigma_px)
 
 
 def moffat_psflet(dx, dy, alpha_px, beta):
