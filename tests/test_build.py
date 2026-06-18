@@ -267,6 +267,39 @@ def test_resampling_footprint_masks_off_grid():
     assert float(w_edge.sum()) < float(w_in.sum())
 
 
+def test_throughput_scales_footprint_sums():
+    """build_ir bakes throughput into H: footprints sum to throughput not 1."""
+    from optixstuff import SpectralThroughput
+
+    curve = SpectralThroughput(
+        jnp.array([600.0, 660.0, 720.0]), jnp.array([0.3, 0.9, 0.6])
+    )
+    disp = LensletDisperser(
+        pitch_m=174e-6,
+        pixsize_m=13e-6,
+        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
+        lam_ref_nm=660.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([100.0, 0.0]),
+        psflet_params=jnp.array([0.7]),
+        psflet_ref_nm=660.0,
+        grid_kind="square",
+        n_lenslets=6,
+        psflet_kind="gaussian",
+        detector_shape=(256, 256),
+        throughput_element=curve,
+    )
+    lam = jnp.array([600.0, 660.0, 720.0])
+    ir = build_ir(disp, lam, fp_shape=(64, 64))
+    sums = ir.det_vals.sum(axis=2)  # (n_channels, n_wav)
+    expected = disp.throughput(lam)  # (n_wav,) = [0.3, 0.9, 0.6]
+    for j in range(int(lam.shape[0])):
+        col = sums[:, j]
+        nonzero = col[col > 1e-8]
+        assert nonzero.size > 0
+        assert jnp.allclose(nonzero, expected[j], atol=1e-5)
+
+
 def test_build_ir_spatial_footprint_is_flux_conserving():
     """Every lenslet's spatial weights sum to the cell area (fp_px^2).
 

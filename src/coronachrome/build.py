@@ -136,6 +136,10 @@ def _(
 
     PSFlets are pixel-integrated (the Gaussian via an erf pixel integral, the
     Moffat via sub-pixel quadrature), not point-sampled at pixel centers.
+
+    Disperser throughput is baked into the operator: each wavelength's footprint
+    is scaled by ``disperser.throughput(lambda)`` after unit-flux renormalization,
+    so the forward and the extraction that inverts H stay consistent.
     """
     lam = jnp.asarray(wavelengths_nm, dtype=float)
     n_wav = int(lam.shape[0])
@@ -204,6 +208,12 @@ def _(
     g = jnp.where(valid, g, 0.0)
     total = g.sum(axis=2, keepdims=True)
     det_vals = g / jnp.clip(total, 1e-12, None)
+    # Bake disperser throughput into H: scale each wavelength's footprint by the
+    # fraction of that wavelength's photons that survive the disperser. Applied
+    # after the unit-flux renorm, so a zero-throughput wavelength gives an
+    # all-zero footprint with no division by zero.
+    tput = disperser.throughput(lam)  # (n_wav,)
+    det_vals = det_vals * tput[None, :, None]
     det_rows = jnp.clip((py * nx + px).astype(jnp.int32), 0, ny * nx - 1)
 
     n_off = int((total[..., 0] <= 1e-12).sum())
