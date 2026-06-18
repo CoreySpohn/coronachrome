@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0](https://github.com/CoreySpohn/coronachrome/compare/v0.2.0...v0.3.0) (2026-06-18)
+
+
+### Features
+
+* Add psflet reference wavelength for accurate dispersion ([6d32de3](https://github.com/CoreySpohn/coronachrome/commit/6d32de3af63a56837304dc50495523687e1930d2))
+* **build:** apply disperser throughput per wavelength in build_ir ([1bc8e30](https://github.com/CoreySpohn/coronachrome/commit/1bc8e308bafe145e3c5c83beceaeab43da8b4156))
+* **psflet:** pixel-integrate the Gaussian PSFlet via erf ([5b9a90a](https://github.com/CoreySpohn/coronachrome/commit/5b9a90af20bf5c23c513f91a43897a06cacbe23b))
+* **psflet:** pixel-integrate the Moffat PSFlet via sub-pixel quadrature ([3338063](https://github.com/CoreySpohn/coronachrome/commit/3338063824be97f46d11fb6f76e0a64a74a62903))
+
 ## [0.2.0](https://github.com/CoreySpohn/coronachrome/compare/v0.1.0...v0.2.0) (2026-05-31)
 
 
