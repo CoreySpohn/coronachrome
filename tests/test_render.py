@@ -24,7 +24,7 @@ def _renderer(n=6, n_wav=5, fp=(64, 64)):
         detector_shape=(256, 256),
     )
     lam = jnp.linspace(640.0, 680.0, n_wav)
-    ir = build_ir(disp, lam, fp_shape=fp)
+    ir = build_ir(disp, lam, fp_shape=fp, fp_px_per_lenslet=2.0)
     return IFSRenderer(ir), ir, fp, n_wav
 
 
@@ -113,14 +113,18 @@ def test_hex_grid_pipeline_streaming_matches_spmv():
         detector_shape=(256, 256),
     )
     lam = jnp.linspace(640.0, 680.0, 5)
-    r = IFSRenderer(build_ir(disp, lam, fp_shape=(64, 64)))
+    r = IFSRenderer(build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0))
     cube = jnp.sin(jnp.arange(5 * 64 * 64, dtype=float).reshape(5, 64, 64))
     assert jnp.allclose(r.forward_streaming(cube), r.forward_spmv(cube), atol=1e-9)
 
 
-def test_spatial_sample_is_partition_of_unity():
-    """A flat unit focal-plane cube samples to unit per-lenslet flux."""
+def test_spatial_sample_integrates_cell_area():
+    """A flat unit focal-plane cube samples to the lenslet cell area.
+
+    The spatial footprint is flux-conserving, so each interior lenslet
+    integrates its full cell: fp_px_per_lenslet**2 = 4 for the 2 px cell.
+    """
     _r, ir, fp, n_wav = _renderer()
     cube = jnp.ones((n_wav, fp[0], fp[1]))
     z = spatial_sample(cube, ir)
-    assert jnp.allclose(z, 1.0)
+    assert jnp.allclose(z, 4.0)

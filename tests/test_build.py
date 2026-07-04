@@ -8,8 +8,8 @@ from coronachrome.build import _resampling_footprints, build_ir
 from coronachrome.ir import SpatialChannelIR
 
 
-def _disp(n=6):
-    return LensletDisperser(
+def _disp(n=6, **overrides):
+    kwargs = dict(
         pitch_m=174e-6,
         pixsize_m=13e-6,
         angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
@@ -23,6 +23,8 @@ def _disp(n=6):
         psflet_kind="gaussian",
         detector_shape=(256, 256),
     )
+    kwargs.update(overrides)
+    return LensletDisperser(**kwargs)
 
 
 def test_psflet_width_scales_linearly_with_wavelength():
@@ -49,7 +51,7 @@ def test_psflet_width_scales_linearly_with_wavelength():
     )
     half = 20
     lam = jnp.array([500.0, 1000.0])
-    ir = build_ir(disp, lam, fp_shape=(16, 16), half=half)
+    ir = build_ir(disp, lam, fp_shape=(16, 16), fp_px_per_lenslet=2.0, half=half)
 
     off = jnp.arange(-half, half + 1).astype(float)
     ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
@@ -92,7 +94,13 @@ def test_moffat_scales_core_width_not_shape():
         detector_shape=(160, 160),
     )
     half = 40
-    ir = build_ir(disp, jnp.array([500.0, 1000.0]), fp_shape=(16, 16), half=half)
+    ir = build_ir(
+        disp,
+        jnp.array([500.0, 1000.0]),
+        fp_shape=(16, 16),
+        fp_px_per_lenslet=2.0,
+        half=half,
+    )
     off = jnp.arange(-half, half + 1).astype(float)
     ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
     ddx, ddy = ddx.reshape(-1), ddy.reshape(-1)
@@ -113,7 +121,7 @@ def test_moffat_scales_core_width_not_shape():
 def test_build_ir_returns_ir_with_expected_shapes():
     """build_ir returns a SpatialChannelIR with expected channel/wav/detector shapes."""
     lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(_disp(6), lam, fp_shape=(64, 64))
+    ir = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
     assert isinstance(ir, SpatialChannelIR)
     assert ir.n_channels == 36
     assert ir.n_wav == 5
@@ -124,7 +132,7 @@ def test_build_ir_returns_ir_with_expected_shapes():
 def test_det_vals_normalized_per_channel_wavelength():
     """On-detector PSFlet footprints are flux-normalized; off-detector ones are zero."""
     lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(_disp(6), lam, fp_shape=(64, 64))
+    ir = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
     sums = ir.det_vals.sum(axis=2)
     nonzero = sums[sums > 1e-8]
     assert jnp.allclose(nonzero, 1.0, atol=1e-5)
@@ -133,7 +141,7 @@ def test_det_vals_normalized_per_channel_wavelength():
 def test_indices_in_bounds():
     """All detector row indices stay within the detector bounds."""
     lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(_disp(6), lam, fp_shape=(64, 64))
+    ir = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
     ny, nx = ir.det_shape
     assert int(ir.det_rows.min()) >= 0
     assert int(ir.det_rows.max()) < ny * nx
@@ -162,7 +170,7 @@ def test_moffat_psflet_build_normalizes():
         detector_shape=(256, 256),
     )
     lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(disp, lam, fp_shape=(64, 64))
+    ir = build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
     sums = ir.det_vals.sum(axis=2)
     nonzero = sums[sums > 1e-8]
     assert jnp.allclose(nonzero, 1.0, atol=1e-5)
@@ -186,7 +194,62 @@ def test_off_detector_footprints_warn():
     )
     lam = jnp.linspace(640.0, 680.0, 5)
     with pytest.warns(UserWarning, match="off the detector"):
-        build_ir(disp, lam, fp_shape=(64, 64))
+        build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
+
+
+def test_derived_sampling_matches_explicit_ratio():
+    """fp_pixel_scale_lod derives the sampling from the descriptor pitch.
+
+    sky_pitch_lod = 0.5 lambda/D over a 0.1 lambda/D per pixel cube grid is 5
+    focal-plane pixels per lenslet, so the derived IR must be identical to the
+    explicit fp_px_per_lenslet=5 build.
+    """
+    lam = jnp.linspace(640.0, 680.0, 3)
+    d = _disp(6, sky_pitch_lod=0.5)
+    ir_derived = build_ir(d, lam, fp_shape=(64, 64), fp_pixel_scale_lod=0.1)
+    ir_explicit = build_ir(d, lam, fp_shape=(64, 64), fp_px_per_lenslet=5.0)
+    assert jnp.array_equal(ir_derived.spatial_src, ir_explicit.spatial_src)
+    assert jnp.allclose(ir_derived.spatial_w, ir_explicit.spatial_w)
+    assert jnp.allclose(ir_derived.det_vals, ir_explicit.det_vals)
+
+
+def test_sampling_knobs_mutually_exclusive():
+    """Passing both the derived and the explicit sampling knob is an error."""
+    d = _disp(6, sky_pitch_lod=0.5)
+    with pytest.raises(ValueError, match="not both"):
+        build_ir(
+            d,
+            jnp.array([660.0]),
+            fp_shape=(64, 64),
+            fp_px_per_lenslet=5.0,
+            fp_pixel_scale_lod=0.1,
+        )
+
+
+def test_sampling_requires_one_knob():
+    """Omitting both sampling inputs is an error, not a silent default."""
+    with pytest.raises(ValueError, match="fp_pixel_scale_lod"):
+        build_ir(_disp(6), jnp.array([660.0]), fp_shape=(64, 64))
+
+
+def test_derived_sampling_requires_descriptor_pitch():
+    """fp_pixel_scale_lod without sky_pitch_lod on the descriptor is an error."""
+    with pytest.raises(ValueError, match="sky_pitch_lod"):
+        build_ir(
+            _disp(6), jnp.array([660.0]), fp_shape=(64, 64), fp_pixel_scale_lod=0.1
+        )
+
+
+def test_undersampled_cube_warns():
+    """Fewer than two cube pixels per lenslet degrades the cell flux integral."""
+    with pytest.warns(UserWarning, match="undersamples"):
+        build_ir(_disp(6), jnp.array([660.0]), fp_shape=(64, 64), fp_px_per_lenslet=1.0)
+
+
+def test_lenslet_cells_beyond_cube_warn():
+    """Lenslet cells reaching past the cube bounds lose flux and must warn."""
+    with pytest.warns(UserWarning, match="past the focal-plane"):
+        build_ir(_disp(6), jnp.array([660.0]), fp_shape=(16, 16), fp_px_per_lenslet=8.0)
 
 
 def test_resampling_footprint_conserves_flux():
@@ -290,7 +353,7 @@ def test_throughput_scales_footprint_sums():
         throughput_element=curve,
     )
     lam = jnp.array([600.0, 660.0, 720.0])
-    ir = build_ir(disp, lam, fp_shape=(64, 64))
+    ir = build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
     sums = ir.det_vals.sum(axis=2)  # (n_channels, n_wav)
     expected = disp.throughput(lam)  # (n_wav,) = [0.3, 0.9, 0.6]
     for j in range(int(lam.shape[0])):

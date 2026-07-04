@@ -20,11 +20,48 @@ from coronachrome.psflet import psflet_weights
 
 
 @functools.singledispatch
-def build_ir(disperser, wavelengths_nm, fp_shape, fp_px_per_lenslet=1.0, half=3):
+def build_ir(disperser, wavelengths_nm, fp_shape, **kwargs):
     """Build a SpatialChannelIR from a disperser descriptor."""
     raise NotImplementedError(
         f"build_ir not implemented for {type(disperser).__name__}"
     )
+
+
+def _resolve_fp_px_per_lenslet(disperser, fp_px_per_lenslet, fp_pixel_scale_lod):
+    """Resolve the spatial sampling (focal-plane pixels per lenslet cell).
+
+    The physical route derives it from the descriptor: ``sky_pitch_lod`` (the
+    lenslet pitch on sky) over ``fp_pixel_scale_lod`` (the cube plate scale,
+    same angular units). ``fp_px_per_lenslet`` remains as an explicit override
+    for reference-implementation parity work; passing both is an error, and so
+    is passing neither -- the sampling is a derived quantity, not a default.
+    """
+    if fp_pixel_scale_lod is not None:
+        if fp_px_per_lenslet is not None:
+            raise ValueError(
+                "pass fp_pixel_scale_lod (derived sampling) or fp_px_per_lenslet "
+                "(explicit override), not both"
+            )
+        if disperser.sky_pitch_lod is None:
+            raise ValueError(
+                "deriving the sampling from fp_pixel_scale_lod needs "
+                "sky_pitch_lod on the disperser descriptor"
+            )
+        fp_px_per_lenslet = float(disperser.sky_pitch_lod) / float(fp_pixel_scale_lod)
+    elif fp_px_per_lenslet is None:
+        raise ValueError(
+            "spatial sampling is underdetermined: pass fp_pixel_scale_lod (the "
+            "cube plate scale; fp px per lenslet is then derived from the "
+            "descriptor's sky_pitch_lod) or an explicit fp_px_per_lenslet"
+        )
+    if fp_px_per_lenslet < 2.0:
+        warnings.warn(
+            f"the focal-plane cube undersamples the lenslet pitch "
+            f"(fp_px_per_lenslet = {fp_px_per_lenslet:.3g} < 2): the "
+            f"flux-conserving cell integral degrades; use a finer cube grid",
+            stacklevel=3,
+        )
+    return fp_px_per_lenslet
 
 
 def _bilinear_footprints(cx, cy, fp_shape):
@@ -120,11 +157,21 @@ def _(
     disperser: LensletDisperser,
     wavelengths_nm,
     fp_shape,
-    fp_px_per_lenslet=1.0,
+    fp_px_per_lenslet=None,
     half=3,
     supersample=4,
+    fp_pixel_scale_lod=None,
 ):
     """Build a SpatialChannelIR from a LensletDisperser.
+
+    Spatial sampling is a derived quantity: pass ``fp_pixel_scale_lod`` (the
+    focal-plane cube plate scale, in the same angular units as the descriptor's
+    ``sky_pitch_lod``, conventionally lambda/D at a common reference
+    wavelength) and the pixels-per-lenslet ratio follows from the hardware.
+    ``fp_px_per_lenslet`` is an explicit override for parity work; exactly one
+    of the two must be given. Build-time diagnostics warn when the cube
+    undersamples the lenslet pitch (< 2 px per cell) and when lenslet cells
+    extend past the cube bounds (those spaxels silently lose flux).
 
     The PSFlet core width (``disperser.psflet_params[0]``, in detector pixels)
     scales linearly with wavelength about ``disperser.psflet_ref_nm`` -- a
@@ -141,6 +188,9 @@ def _(
     is scaled by ``disperser.throughput(lambda)`` after unit-flux renormalization,
     so the forward and the extraction that inverts H stay consistent.
     """
+    fp_px_per_lenslet = _resolve_fp_px_per_lenslet(
+        disperser, fp_px_per_lenslet, fp_pixel_scale_lod
+    )
     lam = jnp.asarray(wavelengths_nm, dtype=float)
     n_wav = int(lam.shape[0])
     positions = (
@@ -163,6 +213,25 @@ def _(
     spatial_src, spatial_w = _resampling_footprints(
         cx, cy, disperser.angle_rad, fp_px_per_lenslet, fp_shape, supersample
     )
+
+    # Coverage diagnostic: a rotated square cell of side fp_px_per_lenslet spans
+    # 0.5 * cell * (|cos a| + |sin a|) per axis; cells reaching past the cube
+    # get zero weight there, so those spaxels lose flux.
+    cell_ext = 0.5 * fp_px_per_lenslet * (jnp.abs(ca) + jnp.abs(sa))
+    n_outside = int(
+        (
+            (cx - cell_ext < -0.5)
+            | (cx + cell_ext > fp_shape[1] - 0.5)
+            | (cy - cell_ext < -0.5)
+            | (cy + cell_ext > fp_shape[0] - 0.5)
+        ).sum()
+    )
+    if n_outside:
+        warnings.warn(
+            f"{n_outside} lenslet cells extend past the focal-plane cube bounds; "
+            f"those spaxels lose flux",
+            stacklevel=2,
+        )
 
     # Detector centroids (n_channels, n_wav) and PSFlet footprint offsets (n_psf,).
     coeffs, lam_ref = disperser.dispersion_coeffs, disperser.lam_ref_nm

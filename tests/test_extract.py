@@ -42,7 +42,8 @@ def _renderer(n=6, n_wav=9, fp=(64, 64)):
     # in pixel space; 9 channels over 620-700 nm packs them too tightly for
     # a matched-filter test (off-diagonal H^T H ~ 50% of diagonal).
     lam = jnp.linspace(580.0, 740.0, n_wav)
-    return IFSRenderer(build_ir(disp, lam, fp_shape=fp)), n_wav
+    ir = build_ir(disp, lam, fp_shape=fp, fp_px_per_lenslet=2.0)
+    return IFSRenderer(ir), n_wav
 
 
 def test_matched_filter_correlates_with_truth():
