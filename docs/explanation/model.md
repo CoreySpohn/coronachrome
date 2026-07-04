@@ -100,7 +100,8 @@ The descriptor is turned into the IR by three small models:
   $u = \log(\lambda / \lambda_\mathrm{ref})$, which generalizes CRISPY's hardcoded
   WFIRST `distort` law (whose linear case is the default).
 - **PSFlets.** The shape of one lenslet's image at one wavelength. coronachrome uses
-  analytic Gaussian or Moffat profiles, broadened along the dispersion direction by a
+  analytic Gaussian or Moffat profiles, or tabulated templates loaded from a
+  [template pack](psflet_templates), broadened along the dispersion direction by a
   per-wavelength **line-spread-function (LSF) smear**, the blur that comes from
   integrating a finite wavelength bin into one detector sample.
 

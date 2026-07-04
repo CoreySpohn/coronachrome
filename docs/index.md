@@ -24,6 +24,16 @@ so it is JIT-compilable, GPU-capable, and differentiable end to end.
   for per-wavelength error bars.
 - **Differentiable.** The forward pass and the extraction both carry gradients, so
   coronachrome can sit inside a fitting or spectral-retrieval loop.
+- **Sampling contracts.** The focal-plane pixels per lenslet are derived from the
+  descriptor's on-sky pitch and the cube plate scale (with build-time coverage and
+  Nyquist diagnostics), and spectral channel grids follow the one-channel-per-
+  resolution-element rule with flux-conserving rebinning. See
+  [Sampling contracts](explanation/sampling_contracts).
+- **PSFlet templates.** Beyond the analytic Gaussian and Moffat profiles, a
+  documented template-pack format carries tabulated, field- and
+  wavelength-dependent PSFlets (with optional wavecal centroid corrections) from
+  any generator into the forward model. See
+  [PSFlet template packs](explanation/psflet_templates).
 
 ## Where it sits
 
@@ -48,12 +58,36 @@ nested per-lenslet loops with a single sparse matrix-vector product, and adds
 differentiability and an analytic extraction covariance. See
 [CRISPY heritage](explanation/crispy_heritage) for the full mapping.
 
+## Roadmap
+
+coronachrome's linear-operator core is in place; the library is growing along
+three axes:
+
+- **Geometries.** The lenslet array is the primary IFS geometry. An
+  image-slicer builder is planned as a second `build_ir` registration on its
+  own descriptor type, targeting ultraviolet channels where lenslets are not
+  practical; the singledispatch seam exists for exactly this.
+- **Extraction.** The linear tier (matched filter, least squares, covariance)
+  is complete. A regularized extractor with positivity and total-variation
+  penalties is planned for crowded fields and low signal-to-noise regimes
+  where the unconstrained least squares rings.
+- **PSFlet fidelity.** The template-pack seam accepts physically propagated
+  PSFlets today (see [PSFlet template packs](explanation/psflet_templates));
+  a wave-optics generator that emits packs from a propagated lenslet train
+  (micro-pupil, sinc-squared wings, pinhole masks, field-dependent
+  aberrations, per-lenslet wavelength solutions) is planned in the
+  [physicaloptix](https://pypi.org/project/physicaloptix/) package, alongside
+  an end-to-end validation of the forward model against CRISPY output for an
+  identical scene.
+
 ```{toctree}
 :maxdepth: 1
 :caption: Explanation
 :hidden:
 
 explanation/model
+explanation/sampling_contracts
+explanation/psflet_templates
 explanation/mathematical_formulation
 explanation/crispy_heritage
 ```
