@@ -198,15 +198,15 @@ def test_off_detector_footprints_warn():
 
 
 def test_derived_sampling_matches_explicit_ratio():
-    """fp_pixel_scale_lod derives the sampling from the descriptor pitch.
+    """fp_pixel_scale_arcsec derives the sampling from the descriptor pitch.
 
-    sky_pitch_lod = 0.5 lambda/D over a 0.1 lambda/D per pixel cube grid is 5
+    A 0.5 arcsec on-sky pitch over a 0.1 arcsec per pixel cube grid is 5
     focal-plane pixels per lenslet, so the derived IR must be identical to the
     explicit fp_px_per_lenslet=5 build.
     """
     lam = jnp.linspace(640.0, 680.0, 3)
-    d = _disp(6, sky_pitch_lod=0.5)
-    ir_derived = build_ir(d, lam, fp_shape=(64, 64), fp_pixel_scale_lod=0.1)
+    d = _disp(6, sky_pitch_arcsec=0.5)
+    ir_derived = build_ir(d, lam, fp_shape=(64, 64), fp_pixel_scale_arcsec=0.1)
     ir_explicit = build_ir(d, lam, fp_shape=(64, 64), fp_px_per_lenslet=5.0)
     assert jnp.array_equal(ir_derived.spatial_src, ir_explicit.spatial_src)
     assert jnp.allclose(ir_derived.spatial_w, ir_explicit.spatial_w)
@@ -215,28 +215,28 @@ def test_derived_sampling_matches_explicit_ratio():
 
 def test_sampling_knobs_mutually_exclusive():
     """Passing both the derived and the explicit sampling knob is an error."""
-    d = _disp(6, sky_pitch_lod=0.5)
+    d = _disp(6, sky_pitch_arcsec=0.5)
     with pytest.raises(ValueError, match="not both"):
         build_ir(
             d,
             jnp.array([660.0]),
             fp_shape=(64, 64),
             fp_px_per_lenslet=5.0,
-            fp_pixel_scale_lod=0.1,
+            fp_pixel_scale_arcsec=0.1,
         )
 
 
 def test_sampling_requires_one_knob():
     """Omitting both sampling inputs is an error, not a silent default."""
-    with pytest.raises(ValueError, match="fp_pixel_scale_lod"):
+    with pytest.raises(ValueError, match="fp_pixel_scale_arcsec"):
         build_ir(_disp(6), jnp.array([660.0]), fp_shape=(64, 64))
 
 
 def test_derived_sampling_requires_descriptor_pitch():
-    """fp_pixel_scale_lod without sky_pitch_lod on the descriptor is an error."""
-    with pytest.raises(ValueError, match="sky_pitch_lod"):
+    """fp_pixel_scale_arcsec without a descriptor sky pitch is an error."""
+    with pytest.raises(ValueError, match="sky_pitch_arcsec"):
         build_ir(
-            _disp(6), jnp.array([660.0]), fp_shape=(64, 64), fp_pixel_scale_lod=0.1
+            _disp(6), jnp.array([660.0]), fp_shape=(64, 64), fp_pixel_scale_arcsec=0.1
         )
 
 
@@ -250,6 +250,68 @@ def test_lenslet_cells_beyond_cube_warn():
     """Lenslet cells reaching past the cube bounds lose flux and must warn."""
     with pytest.warns(UserWarning, match="past the focal-plane"):
         build_ir(_disp(6), jnp.array([660.0]), fp_shape=(16, 16), fp_px_per_lenslet=8.0)
+
+
+def _rms_x(ir, half):
+    """Weighted x-rms of channel 0's footprint at wavelength 0."""
+    off = jnp.arange(-half, half + 1).astype(float)
+    _ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
+    ddx = ddx.reshape(-1)
+    w = ir.det_vals[0, 0]
+    m = (w * ddx).sum() / w.sum()
+    return float(jnp.sqrt((w * (ddx - m) ** 2).sum() / w.sum()))
+
+
+def test_wavelength_edges_control_lsf_smear():
+    """Explicit bin edges set the LSF smear exactly.
+
+    A single-wavelength build without edges assumes a 1 nm bin; passing the
+    real 40 nm bin edges must smear the PSFlet along the dispersion axis by a
+    clearly larger amount (the boxcar over a 6 px bin dominates the 0.7 px
+    core).
+    """
+    disp = _disp(1, angle_rad=0.0, detector_shape=(160, 160))
+    half = 10
+    lam = jnp.array([660.0])
+    ir_default = build_ir(
+        disp, lam, fp_shape=(16, 16), fp_px_per_lenslet=2.0, half=half
+    )
+    ir_edges = build_ir(
+        disp,
+        lam,
+        fp_shape=(16, 16),
+        fp_px_per_lenslet=2.0,
+        half=half,
+        wavelength_edges=jnp.array([640.0, 680.0]),
+    )
+    assert _rms_x(ir_edges, half) > 2.0 * _rms_x(ir_default, half)
+
+
+def test_wavelength_edges_match_gradient_on_uniform_grid():
+    """On a uniform center grid the edges path equals the gradient fallback."""
+    lam = jnp.linspace(640.0, 680.0, 5)
+    edges = jnp.linspace(635.0, 685.0, 6)
+    ir_g = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
+    ir_e = build_ir(
+        _disp(6),
+        lam,
+        fp_shape=(64, 64),
+        fp_px_per_lenslet=2.0,
+        wavelength_edges=edges,
+    )
+    assert jnp.allclose(ir_g.det_vals, ir_e.det_vals, atol=1e-12)
+
+
+def test_wavelength_edges_shape_validated():
+    """Edges must bracket every wavelength: n_wav + 1 entries required."""
+    with pytest.raises(ValueError, match="wavelength_edges"):
+        build_ir(
+            _disp(6),
+            jnp.array([650.0, 660.0]),
+            fp_shape=(64, 64),
+            fp_px_per_lenslet=2.0,
+            wavelength_edges=jnp.array([640.0, 655.0, 670.0, 680.0]),
+        )
 
 
 def test_resampling_footprint_conserves_flux():

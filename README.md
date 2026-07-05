@@ -61,11 +61,11 @@ disperser = LensletDisperser(
     n_lenslets=8,
     psflet_kind="gaussian",
     detector_shape=(256, 256),
-    sky_pitch_lod=0.5,
+    sky_pitch_arcsec=0.014,
 )
 
 lam, _ = spectral_grid(resolving_power=50.0, lam_min_nm=620.0, lam_max_nm=700.0)
-ir = build_ir(disperser, lam, fp_shape=(64, 64), fp_pixel_scale_lod=0.25)
+ir = build_ir(disperser, lam, fp_shape=(64, 64), fp_pixel_scale_arcsec=0.007)
 renderer = IFSRenderer(ir)
 
 cube = jnp.ones((lam.shape[0], 64, 64))  # focal-plane rate maps

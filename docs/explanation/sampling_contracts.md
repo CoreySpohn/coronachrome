@@ -15,19 +15,28 @@ per lenslet cell, is therefore a derived quantity:
 
 $$
 \texttt{fp\_px\_per\_lenslet}
-  = \frac{\texttt{sky\_pitch\_lod}}{\texttt{fp\_pixel\_scale\_lod}}.
+  = \frac{\texttt{sky\_pitch\_arcsec}}{\texttt{fp\_pixel\_scale\_arcsec}}.
 $$
 
-The descriptor carries the pitch (`LensletDisperser.sky_pitch_lod`, the
-lenslet pitch projected on sky) and the build call supplies the cube plate
-scale ({func}`~coronachrome.build_ir` keyword `fp_pixel_scale_lod`). Both are
-conventionally in units of $\lambda / D$ at a common reference wavelength,
-and because only the ratio enters, any consistent angular unit (for example
-milliarcseconds) works equally well.
+The descriptor carries the pitch (`LensletDisperser.sky_pitch_arcsec`, the
+lenslet pitch projected on sky) and the build call supplies the cube's
+angular plate scale ({func}`~coronachrome.build_ir` keyword
+`fp_pixel_scale_arcsec`). Both are plain angles in arcseconds. The unit
+choice is deliberate: upstream simulators render every wavelength onto one
+fixed angular grid (the imaging detector's), so the cube's plate scale is a
+wavelength-independent angle, and quoting either quantity in $\lambda / D$
+would smuggle a reference wavelength into a relation that has none. When the
+cube comes from an optical path, the plate scale to pass is exactly the
+detector's:
 
 ```python
-disperser = LensletDisperser(..., sky_pitch_lod=0.5)
-ir = build_ir(disperser, lam, fp_shape=cube.shape[1:], fp_pixel_scale_lod=0.25)
+disperser = LensletDisperser(..., sky_pitch_arcsec=0.014)
+ir = build_ir(
+    disperser,
+    lam,
+    fp_shape=cube.shape[1:],
+    fp_pixel_scale_arcsec=path.detector.pixel_scale_arcsec,
+)
 ```
 
 An explicit `fp_px_per_lenslet` override remains available for parity work
@@ -83,4 +92,6 @@ lam = channel_centers(edges)
 {func}`~coronachrome.rebin_channels` is flux-conserving for bin-integrated
 values (each destination bin takes the overlap fraction of every source bin),
 and on an exactly nested grid like the one above it reduces to a plain sum of
-sub-channels.
+sub-channels. Passing the same `edges` to `build_ir(wavelength_edges=edges)`
+gives the line-spread-function smear the exact extent of each bin instead of
+an approximation from the center spacing.

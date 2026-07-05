@@ -32,32 +32,37 @@ def build_ir(disperser, wavelengths_nm, fp_shape, **kwargs):
     )
 
 
-def _resolve_fp_px_per_lenslet(disperser, fp_px_per_lenslet, fp_pixel_scale_lod):
+def _resolve_fp_px_per_lenslet(disperser, fp_px_per_lenslet, fp_pixel_scale_arcsec):
     """Resolve the spatial sampling (focal-plane pixels per lenslet cell).
 
-    The physical route derives it from the descriptor: ``sky_pitch_lod`` (the
-    lenslet pitch on sky) over ``fp_pixel_scale_lod`` (the cube plate scale,
-    same angular units). ``fp_px_per_lenslet`` remains as an explicit override
-    for reference-implementation parity work; passing both is an error, and so
-    is passing neither -- the sampling is a derived quantity, not a default.
+    The physical route derives it from the descriptor: ``sky_pitch_arcsec``
+    (the lenslet pitch on sky) over ``fp_pixel_scale_arcsec`` (the cube's
+    angular plate scale). Both are plain angles in arcseconds -- the cube
+    lives on one fixed angular grid for every wavelength plane, so no
+    reference wavelength enters. ``fp_px_per_lenslet`` remains as an explicit
+    override for reference-implementation parity work; passing both is an
+    error, and so is passing neither -- the sampling is a derived quantity,
+    not a default.
     """
-    if fp_pixel_scale_lod is not None:
+    if fp_pixel_scale_arcsec is not None:
         if fp_px_per_lenslet is not None:
             raise ValueError(
-                "pass fp_pixel_scale_lod (derived sampling) or fp_px_per_lenslet "
+                "pass fp_pixel_scale_arcsec (derived sampling) or fp_px_per_lenslet "
                 "(explicit override), not both"
             )
-        if disperser.sky_pitch_lod is None:
+        if disperser.sky_pitch_arcsec is None:
             raise ValueError(
-                "deriving the sampling from fp_pixel_scale_lod needs "
-                "sky_pitch_lod on the disperser descriptor"
+                "deriving the sampling from fp_pixel_scale_arcsec needs "
+                "sky_pitch_arcsec on the disperser descriptor"
             )
-        fp_px_per_lenslet = float(disperser.sky_pitch_lod) / float(fp_pixel_scale_lod)
+        fp_px_per_lenslet = float(disperser.sky_pitch_arcsec) / float(
+            fp_pixel_scale_arcsec
+        )
     elif fp_px_per_lenslet is None:
         raise ValueError(
-            "spatial sampling is underdetermined: pass fp_pixel_scale_lod (the "
+            "spatial sampling is underdetermined: pass fp_pixel_scale_arcsec (the "
             "cube plate scale; fp px per lenslet is then derived from the "
-            "descriptor's sky_pitch_lod) or an explicit fp_px_per_lenslet"
+            "descriptor's sky_pitch_arcsec) or an explicit fp_px_per_lenslet"
         )
     if fp_px_per_lenslet < 2.0:
         warnings.warn(
@@ -196,15 +201,17 @@ def _(
     fp_px_per_lenslet=None,
     half=3,
     supersample=4,
-    fp_pixel_scale_lod=None,
+    fp_pixel_scale_arcsec=None,
     psflet_pack=None,
+    wavelength_edges=None,
 ):
     """Build a SpatialChannelIR from a LensletDisperser.
 
-    Spatial sampling is a derived quantity: pass ``fp_pixel_scale_lod`` (the
-    focal-plane cube plate scale, in the same angular units as the descriptor's
-    ``sky_pitch_lod``, conventionally lambda/D at a common reference
-    wavelength) and the pixels-per-lenslet ratio follows from the hardware.
+    Spatial sampling is a derived quantity: pass ``fp_pixel_scale_arcsec``
+    (the focal-plane cube's angular plate scale, arcsec per pixel -- for a
+    cube rendered onto a detector grid this is
+    ``optical_path.detector.pixel_scale_arcsec``) and the pixels-per-lenslet
+    ratio follows from the descriptor's ``sky_pitch_arcsec``.
     ``fp_px_per_lenslet`` is an explicit override for parity work; exactly one
     of the two must be given. Build-time diagnostics warn when the cube
     undersamples the lenslet pitch (< 2 px per cell) and when lenslet cells
@@ -220,6 +227,12 @@ def _(
 
     PSFlets are pixel-integrated (the Gaussian via an erf pixel integral, the
     Moffat via sub-pixel quadrature), not point-sampled at pixel centers.
+
+    ``wavelength_edges`` (``n_wav + 1`` ascending values) give each channel's
+    bin extent exactly, so the LSF smear is the detector span of the real bin.
+    Without them the bin widths are approximated from the center spacing
+    (``jnp.gradient``), and a single-wavelength build assumes a 1 nm bin --
+    fine for quick looks, wrong for wide single-channel bins.
 
     With ``psflet_kind="template"`` the PSFlet comes from a frozen template
     pack (``psflet_pack`` argument, else the descriptor's
@@ -237,7 +250,7 @@ def _(
     so the forward and the extraction that inverts H stay consistent.
     """
     fp_px_per_lenslet = _resolve_fp_px_per_lenslet(
-        disperser, fp_px_per_lenslet, fp_pixel_scale_lod
+        disperser, fp_px_per_lenslet, fp_pixel_scale_arcsec
     )
     lam = jnp.asarray(wavelengths_nm, dtype=float)
     n_wav = int(lam.shape[0])
@@ -321,12 +334,23 @@ def _(
     dx = px - xc[..., None]
     dy = py - yc[..., None]
 
-    # Per-wavelength LSF smear width [px].
-    dlam = jnp.gradient(lam) if n_wav > 1 else jnp.array([1.0])
-    smear = jnp.abs(
-        dispersion_px(coeffs, lam_ref, lam + 0.5 * dlam)
-        - dispersion_px(coeffs, lam_ref, lam - 0.5 * dlam)
-    )
+    # Per-wavelength LSF smear width [px]: the detector extent of each
+    # wavelength bin -- exact from the bin edges when given, else approximated
+    # from the center spacing (with a 1 nm bin assumed for a single channel).
+    if wavelength_edges is not None:
+        edges = jnp.asarray(wavelength_edges, dtype=float)
+        if edges.shape != (n_wav + 1,):
+            raise ValueError("wavelength_edges must have n_wav + 1 entries")
+        smear = jnp.abs(
+            dispersion_px(coeffs, lam_ref, edges[1:])
+            - dispersion_px(coeffs, lam_ref, edges[:-1])
+        )
+    else:
+        dlam = jnp.gradient(lam) if n_wav > 1 else jnp.array([1.0])
+        smear = jnp.abs(
+            dispersion_px(coeffs, lam_ref, lam + 0.5 * dlam)
+            - dispersion_px(coeffs, lam_ref, lam - 0.5 * dlam)
+        )
 
     # PSFlet weights for every (channel, wavelength, footprint pixel). vmap
     # over the wavelength axis so each wavelength's shape and smear apply.
