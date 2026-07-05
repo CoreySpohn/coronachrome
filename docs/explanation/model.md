@@ -168,3 +168,33 @@ near-duplicate, so the normal equations turn near-singular and float32 NormalCG 
 break down; reduce the wavelength count, set the global `x64` flag, or raise the
 `damping`. The covariance forms the normal operator explicitly, which squares the
 conditioning, so in practice it should be run under `x64`.
+
+## Units and normalization
+
+One ledger for the whole chain, so every factor is applied exactly once:
+
+- **The cube.** Focal-plane inputs are bin-integrated photon rates per cube
+  pixel (photons per second per pixel per spectral channel), not spectral
+  densities, and every wavelength plane shares one fixed angular grid (an
+  upstream simulator resamples each wavelength onto the imaging detector's
+  grid). The spatial step integrates over each lenslet cell, so a spaxel's
+  flux scales with the cell area.
+- **H and throughput.** Each (lenslet, wavelength) footprint is renormalized
+  to unit flux and then scaled by `disperser.throughput(lambda)`. The
+  disperser transmission therefore lives inside $H$ exactly once, and
+  template packs never carry it: templates are shape only.
+- **QE and electrons.** $H$ produces photon rates at the IFS detector;
+  quantum efficiency is applied exactly once, at readout (electrons equal
+  QE times rate times exposure). An extraction run against electron counts
+  returns electrons: divide by QE times exposure to recover the cube's rate
+  units, and pass weights $1/N$ with the per-pixel variance $N$ in electrons
+  squared.
+- **Pixel response.** Pixel integration in the PSFlet (the erf integral, the
+  Moffat quadrature, or the box integration a pack generator performs)
+  represents the ideal pixel aperture only. Detector charge diffusion is not
+  included; if a pack's provenance says its generator baked diffusion in, the
+  detector model must not apply it again.
+- **Spectral bins.** Channel values are integrals over their bins:
+  {func}`~coronachrome.rebin_channels` conserves them, and passing the same
+  edges as `wavelength_edges` to {func}`~coronachrome.build_ir` makes the LSF
+  smear use the exact bin extents.
