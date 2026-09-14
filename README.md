@@ -69,8 +69,8 @@ ir = build_ir(disperser, lam, fp_shape=(64, 64), fp_pixel_scale_arcsec=0.007)
 renderer = IFSRenderer(ir)
 
 cube = jnp.ones((lam.shape[0], 64, 64))  # focal-plane rate maps
-detector = renderer.forward_spmv(cube)   # dispersed micro-spectra
-spectra = lstsq(renderer, detector)      # per-spaxel extraction
+detector = renderer.forward_spmv(cube)  # dispersed micro-spectra
+spectra = lstsq(renderer, detector)  # per-spaxel extraction
 ```
 
 ## Documentation
