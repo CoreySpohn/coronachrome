@@ -193,6 +193,142 @@ def _resampling_footprints(cx, cy, angle_rad, cell_px, fp_shape, supersample=4):
     return jax.vmap(one_lenslet)(cx, cy)
 
 
+def lenslet_positions(disperser):
+    """Lenslet-index coordinates of the descriptor's grid, ``(n_channels, 2)``.
+
+    Row ``k`` is channel ``k`` (the ordering of every per-channel array in the
+    IR). The coordinates are the :func:`~coronachrome.grids.square_grid` or
+    :func:`~coronachrome.grids.hex_grid` convention: one unit per lenslet
+    pitch, with the lenslet-index origin ``(0, 0)`` at the grid center.
+    """
+    if disperser.grid_kind == "square":
+        return square_grid(disperser.n_lenslets)
+    return hex_grid(disperser.n_lenslets)
+
+
+def lenslet_cell_centers(disperser, fp_shape, fp_px_per_lenslet, positions=None):
+    """Focal-plane centers of the lenslet collection cells, in cube pixels.
+
+    Coordinates are cube pixel-center coordinates: pixel ``(row, column)`` of
+    a cube plane is centered on ``(x, y) = (column, row)``. The lenslet-index
+    origin sits at ``(fp_shape[1] / 2, fp_shape[0] / 2)``, which for an even
+    cube dimension is half a pixel above the geometric array center
+    ``(n - 1) / 2``. Each cell is a square of side ``fp_px_per_lenslet``
+    rotated by ``disperser.angle_rad`` about its center; these are the cells
+    :func:`build_ir` integrates the cube over.
+
+    Args:
+        disperser: A ``LensletDisperser``.
+        fp_shape: Focal-plane cube ``(ny, nx)``.
+        fp_px_per_lenslet: Cube pixels per lenslet pitch.
+        positions: Optional ``(n, 2)`` lenslet-index coordinates to place
+            (default: the descriptor's whole grid).
+
+    Returns:
+        Tuple ``(cx, cy)``, each ``(n,)``.
+    """
+    if positions is None:
+        positions = lenslet_positions(disperser)
+    positions = jnp.asarray(positions, dtype=float)
+    fx0, fy0 = fp_shape[1] / 2.0, fp_shape[0] / 2.0
+    ca, sa = jnp.cos(disperser.angle_rad), jnp.sin(disperser.angle_rad)
+    px, py = positions[:, 0], positions[:, 1]
+    cx = fx0 + fp_px_per_lenslet * (ca * px - sa * py)
+    cy = fy0 + fp_px_per_lenslet * (sa * px + ca * py)
+    return cx, cy
+
+
+def _placement_centroids(disperser, positions, lam, pack):
+    """Detector centroids the footprints are placed at, plus the anchor index.
+
+    The geometric dispersion trace (:func:`lenslet_centroids`), shifted by a
+    template pack's per-anchor wavecal correction when ``pack`` carries
+    ``centroids``. Returns ``(xc, yc, field_idx)``; ``field_idx`` is None
+    without a pack.
+    """
+    scale = disperser.pitch_m / disperser.pixsize_m
+    disp = dispersion_px(disperser.dispersion_coeffs, disperser.lam_ref_nm, lam)
+    xc, yc = lenslet_centroids(
+        positions, scale, disperser.angle_rad, disp, disperser.detector_shape
+    )
+    if pack is None:
+        return xc, yc, None
+    field_idx = nearest_field_idx(pack, positions)
+    if pack.centroids is not None:
+        # Per-anchor (dx, dy) wavecal corrections, interpolated to the
+        # requested wavelengths, applied before footprint placement.
+        def interp_corr(anchor_corr):
+            return jnp.stack(
+                [
+                    jnp.interp(lam, pack.wavelengths_nm, anchor_corr[:, 0]),
+                    jnp.interp(lam, pack.wavelengths_nm, anchor_corr[:, 1]),
+                ],
+                axis=-1,
+            )
+
+        corr = jax.vmap(interp_corr)(pack.centroids)  # (n_field, n_wav, 2)
+        xc = xc + corr[field_idx, :, 0]
+        yc = yc + corr[field_idx, :, 1]
+    return xc, yc, field_idx
+
+
+def detector_centroids(
+    disperser, wavelengths_nm, *, psflet_pack=None, positions=None, corrected=True
+):
+    """PSFlet centroids on the detector, as :func:`build_ir` places them.
+
+    The centroid of channel ``k`` at wavelength ``lambda`` is the detector
+    point the PSFlet footprint offsets ``(dx, dy)`` are measured from, in
+    detector pixel-center coordinates (pixel ``(row, column)`` is centered on
+    ``(x, y) = (column, row)``). Dispersion runs along detector x: the offset
+    is ``polyval(dispersion_coeffs, log(lambda / lam_ref_nm))``, so a positive
+    leading coefficient moves longer wavelengths toward larger x.
+
+    Args:
+        disperser: A ``LensletDisperser``.
+        wavelengths_nm: ``(n_wav,)`` wavelengths.
+        psflet_pack: Template pack for ``psflet_kind="template"`` (default:
+            the descriptor's ``psflet_pack_path``, as in :func:`build_ir`).
+        positions: Optional ``(n, 2)`` lenslet-index coordinates (default:
+            the descriptor's whole grid, in channel order).
+        corrected: Apply a template pack's per-anchor centroid correction.
+            False returns the geometric dispersion trace alone.
+
+    Returns:
+        Tuple ``(xc, yc)``, each ``(n, n_wav)``.
+    """
+    lam = jnp.atleast_1d(jnp.asarray(wavelengths_nm, dtype=float))
+    if positions is None:
+        positions = lenslet_positions(disperser)
+    positions = jnp.asarray(positions, dtype=float)
+    pack = None
+    if corrected and disperser.psflet_kind == "template":
+        pack = _resolve_psflet_pack(disperser, psflet_pack)
+    xc, yc, _ = _placement_centroids(disperser, positions, lam, pack)
+    return xc, yc
+
+
+def detector_trace_origin(disperser):
+    """Detector point the trace geometry is anchored to, ``(x, y)`` pixels.
+
+    Where the lenslet-index origin lands at zero dispersion offset:
+    ``(detector_shape[1] / 2, detector_shape[0] / 2)`` in detector
+    pixel-center coordinates. Every trace is this point plus the rotated,
+    scaled lenslet offset plus the dispersion offset along x. It coincides
+    with the reference-wavelength centroid of lenslet ``(0, 0)`` only when
+    the dispersion polynomial has no constant term.
+    """
+    scale = disperser.pitch_m / disperser.pixsize_m
+    xc, yc = lenslet_centroids(
+        jnp.zeros((1, 2)),
+        scale,
+        disperser.angle_rad,
+        jnp.zeros(1),
+        disperser.detector_shape,
+    )
+    return float(xc[0, 0]), float(yc[0, 0])
+
+
 @build_ir.register
 def _(
     disperser: LensletDisperser,
@@ -254,23 +390,15 @@ def _(
     )
     lam = jnp.asarray(wavelengths_nm, dtype=float)
     n_wav = int(lam.shape[0])
-    positions = (
-        square_grid(disperser.n_lenslets)
-        if disperser.grid_kind == "square"
-        else hex_grid(disperser.n_lenslets)
-    )
+    positions = lenslet_positions(disperser)
     n_channels = int(positions.shape[0])
-    scale = disperser.pitch_m / disperser.pixsize_m
     ny, nx = disperser.detector_shape
 
     # Spatial sampling: flux-conserving footprints over each lenslet's cell. The
     # lenslet grid is rotated by the lenslet angle in the focal plane, matching
     # the rotation applied to the detector centroids below.
-    fx0, fy0 = fp_shape[1] / 2.0, fp_shape[0] / 2.0
     ca, sa = jnp.cos(disperser.angle_rad), jnp.sin(disperser.angle_rad)
-    px, py = positions[:, 0], positions[:, 1]
-    cx = fx0 + fp_px_per_lenslet * (ca * px - sa * py)
-    cy = fy0 + fp_px_per_lenslet * (sa * px + ca * py)
+    cx, cy = lenslet_cell_centers(disperser, fp_shape, fp_px_per_lenslet, positions)
     spatial_src, spatial_w = _resampling_footprints(
         cx, cy, disperser.angle_rad, fp_px_per_lenslet, fp_shape, supersample
     )
@@ -296,32 +424,11 @@ def _(
 
     # Detector centroids (n_channels, n_wav) and PSFlet footprint offsets (n_psf,).
     coeffs, lam_ref = disperser.dispersion_coeffs, disperser.lam_ref_nm
-    disp = dispersion_px(coeffs, lam_ref, lam)
-    xc, yc = lenslet_centroids(
-        positions, scale, disperser.angle_rad, disp, disperser.detector_shape
-    )
-
     pack = None
-    field_idx = None
     if disperser.psflet_kind == "template":
         pack = _resolve_psflet_pack(disperser, psflet_pack)
         _validate_pack_for_band(pack, lam, half)
-        field_idx = nearest_field_idx(pack, positions)
-        if pack.centroids is not None:
-            # Per-anchor (dx, dy) wavecal corrections, interpolated to the
-            # requested wavelengths, applied before footprint placement.
-            def interp_corr(anchor_corr):
-                return jnp.stack(
-                    [
-                        jnp.interp(lam, pack.wavelengths_nm, anchor_corr[:, 0]),
-                        jnp.interp(lam, pack.wavelengths_nm, anchor_corr[:, 1]),
-                    ],
-                    axis=-1,
-                )
-
-            corr = jax.vmap(interp_corr)(pack.centroids)  # (n_field, n_wav, 2)
-            xc = xc + corr[field_idx, :, 0]
-            yc = yc + corr[field_idx, :, 1]
+    xc, yc, field_idx = _placement_centroids(disperser, positions, lam, pack)
 
     off = jnp.arange(-half, half + 1)
     ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
