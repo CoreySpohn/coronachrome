@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.0.0](https://github.com/CoreySpohn/coronachrome/compare/v0.3.0...v1.0.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **build:** angular sampling units (sky_pitch_arcsec over fp_pixel_scale_arcsec) and exact wavelength_edges bin smear
+* **build:** derive fp_px_per_lenslet from the descriptor sky pitch, with sampling diagnostics
+
+### Features
+
+* **build:** angular sampling units (sky_pitch_arcsec over fp_pixel_scale_arcsec) and exact wavelength_edges bin smear ([75651ec](https://github.com/CoreySpohn/coronachrome/commit/75651ec459d65635c61ddf99b3f4a2905a0fe2af))
+* **build:** derive fp_px_per_lenslet from the descriptor sky pitch, with sampling diagnostics ([ec1af1c](https://github.com/CoreySpohn/coronachrome/commit/ec1af1c80f71d4d0df3e1451742c2aa4080ce6fc))
+* **build:** expose the lenslet geometry build_ir places cells and footprints with ([2652a69](https://github.com/CoreySpohn/coronachrome/commit/2652a69c8ae5438b137fa28da3b0304a9052ca0a))
+* **spectral:** Nyquist channel grid helpers and flux-conserving rebin ([74af7a2](https://github.com/CoreySpohn/coronachrome/commit/74af7a2a1ba74c132b06e0179c6c74eb00d1d2cb))
+* **templates:** frozen PSFlet template packs and template-mode IR build ([13dc5f6](https://github.com/CoreySpohn/coronachrome/commit/13dc5f621d4aced8cfd2cc900244d2cff86d8d41))
+* **viz:** add lenslet layout, trace and channel covariance views ([9734750](https://github.com/CoreySpohn/coronachrome/commit/9734750a932f56ee7fa5c054a992387344750d59))
+
+
+### Bug Fixes
+
+* **viz:** frame only on-detector footprint pixels and label covariance blocks on the diagonal ([a31bf16](https://github.com/CoreySpohn/coronachrome/commit/a31bf16297a1a1fbb032643a316bdbc189f6ca49))
+
 ## [0.3.0](https://github.com/CoreySpohn/coronachrome/compare/v0.2.0...v0.3.0) (2026-06-20)
 
 
