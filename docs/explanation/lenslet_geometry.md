@@ -68,8 +68,10 @@ a, b = 24, 31
 styles = ep.SourceStyles([f"lenslet {a}", f"lenslet {b}"])
 ```
 
-The build warns that two footprints of one corner lenslet fall entirely off
-the detector; the clipping section below returns to that edge.
+The build warns that two (lenslet, wavelength) footprints fall entirely off
+the detector: the shortest-wavelength bin of lenslet 6 and the
+longest-wavelength bin of lenslet 42, at opposite edges. The clipping section
+below returns to the detector edge.
 
 ## Collection cells on the entrance plane
 
