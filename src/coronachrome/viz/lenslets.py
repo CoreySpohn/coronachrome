@@ -175,7 +175,7 @@ def plot_lenslet_cells(
     cube grid (optionally over an image of the cube, in the ``intensity``
     colormap on a log norm, raw pixels), the ``channels`` cells are outlined
     in their source colors and labeled, and the reference points are marked
-    with distinct shapes and labels: the optical center (a plus, only when
+    with distinct shapes and labels: the optical center (an x, only when
     ``optical_center_px`` is given) and the lenslet-grid origin (a square).
 
     The cells are the ones :func:`coronachrome.build_ir` integrates: squares
@@ -368,11 +368,18 @@ def _footprint_image(ir, channels):
 def _footprint_box(ir, channel, index):
     """Pixel-edge box ``(x0, y0, width, height)`` of one PSFlet footprint.
 
-    Read from the IR's own ``det_rows``, the detector pixels the operator
-    assigns to that (lenslet, wavelength).
+    Read from the IR's own footprint: the detector pixels that carry weight
+    for that (lenslet, wavelength). Footprint pixels that fall off the
+    detector are stored with zero weight at a clipped index, so only entries
+    with positive weight count. Returns None when the whole footprint is off
+    the detector.
     """
     nx = ir.det_shape[1]
     rows = np.asarray(ir.det_rows[channel, index])
+    vals = np.asarray(ir.det_vals[channel, index])
+    rows = rows[vals > 0]
+    if rows.size == 0:
+        return None
     ys, xs = np.divmod(rows, nx)
     return (
         float(xs.min()) - 0.5,
@@ -427,7 +434,9 @@ def plot_traces(
 
     - each ``channels`` trace as a thin line through its geometric dispersion
       centroids (the dispersion model alone, before any template-pack
-      correction), in the lenslet's source color;
+      correction), in the lenslet's source color; on the bare-centroids
+      route there is no separate geometric trace, and the line runs through
+      the centroids passed in;
     - the PSFlet centroids at the ``marked`` wavelengths, as footprints are
       actually placed (a template pack's centroid correction included), so a
       calibrated correction shows as markers leaving the geometric line;
@@ -435,7 +444,9 @@ def plot_traces(
     - the detector edge (a dashed outline), which matters only when
       ``window`` reaches past it;
     - with ``scan_index``, one highlighted PSFlet: its centroid, its
-      footprint box from the IR, and a wavelength readout.
+      footprint box from the IR (the on-detector pixels carrying weight;
+      hidden while the whole footprint is off the detector), and a
+      wavelength readout.
 
     Dispersion runs along detector x; for a positive leading dispersion
     coefficient longer wavelengths sit at larger x. The end wavelengths of
@@ -490,8 +501,10 @@ def plot_traces(
         ``"text"`` (labels; the readout is labeled ``"scan readout"``) and,
         with a scan, ``"line"`` (the highlighted centroid). ``update(k)``
         moves the highlight to wavelength index ``k``: it changes only
-        ``"line"``, the scan footprint rectangle, and the readout text; the
-        image, its color scale, and the axis limits never change.
+        ``"line"``, the scan footprint rectangle (its extent, and its
+        visibility when a footprint lies wholly off the detector), and the
+        readout text; the image, its color scale, and the axis limits never
+        change.
     """
     ep = eyepiece()
     import hwostyle
@@ -642,11 +655,10 @@ def plot_traces(
         artists["line"] = marker
         box = None
         if ir is not None:
-            x0, y0, w, h = _footprint_box(ir, sc, scan_index)
             box = Rectangle(
-                (x0, y0),
-                w,
-                h,
+                (0.0, 0.0),
+                0.0,
+                0.0,
                 fill=False,
                 edgecolor=color,
                 linewidth=1.6,
@@ -655,6 +667,18 @@ def plot_traces(
             )
             ax.add_patch(box)
             ellipses.append(box)
+
+        def place_box(index):
+            extent = _footprint_box(ir, sc, index)
+            box.set_visible(extent is not None)
+            if extent is not None:
+                bx, by, bw, bh = extent
+                box.set_xy((bx, by))
+                box.set_width(bw)
+                box.set_height(bh)
+
+        if box is not None:
+            place_box(scan_index)
         readout = ax.text(
             0.02,
             0.97,
@@ -665,7 +689,12 @@ def plot_traces(
             ha="left",
             va="top",
             label="scan readout",
-            path_effects=_halo(),
+            bbox={
+                "boxstyle": "round,pad=0.25",
+                "facecolor": _neutral(0.0),
+                "edgecolor": "none",
+                "alpha": 0.8,
+            },
             zorder=7,
         )
         texts.append(readout)
@@ -674,10 +703,7 @@ def plot_traces(
             """Move the highlight to wavelength index ``index``."""
             marker.set_data([float(xc[sc, index])], [float(yc[sc, index])])
             if box is not None:
-                bx, by, bw, bh = _footprint_box(ir, sc, index)
-                box.set_xy((bx, by))
-                box.set_width(bw)
-                box.set_height(bh)
+                place_box(index)
             readout.set_text(rf"{_source_name(sc)}, $\lambda$ = {lam[index]:.0f} nm")
 
     artists["lines"] = lines

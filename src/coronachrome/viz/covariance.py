@@ -26,6 +26,13 @@ def _text_color():
     return mpl.rcParams["text.color"]
 
 
+def _face_color():
+    """The active axes facecolor, resolved at call time."""
+    import matplotlib as mpl
+
+    return mpl.rcParams["axes.facecolor"]
+
+
 def _mid_neutral():
     """A gray halfway from the axes facecolor to the text color.
 
@@ -65,7 +72,11 @@ def plot_channel_covariance(
     channel grids are log-spaced; ticks carry the bin-center wavelengths.
     A matrix larger than ``len(wavelengths_nm)`` is read as several lenslets
     in the flattened ``channel * n_wav + wavelength`` order, and the lenslet
-    blocks are separated by lines and labeled with ``channel_labels``.
+    blocks are separated by lines and labeled with ``channel_labels``. Entry
+    ``[i, j]`` is drawn at ``x = j``, ``y = i`` with the origin at the lower
+    left, so lenslet ``b``'s own block is the ``b``-th diagonal block counted
+    from the lower left; each label sits in the upper-left corner of its
+    lenslet's diagonal block.
 
     Args:
         cov: A square covariance ``(m * n_wav, m * n_wav)``, or a stack
@@ -88,9 +99,9 @@ def plot_channel_covariance(
     Returns:
         An ``eyepiece.PlotResult``. Artists: ``"image"``, ``"cbar"``, and for
         a multi-lenslet matrix ``"lines"`` (block separators) and ``"text"``
-        (block labels). ``update(new_cov)`` redraws a matrix of the same shape
-        (after the same ``block`` selection and correlation transform) under
-        the first draw's norm.
+        (one label per lenslet, on its diagonal block). ``update(new_cov)``
+        redraws a matrix of the same shape (after the same ``block`` selection
+        and correlation transform) under the first draw's norm.
     """
     ep = eyepiece()
 
@@ -156,18 +167,25 @@ def plot_channel_covariance(
             lines.append(ax.axvline(pos, color=edge, linewidth=1.0))
         artists["lines"] = lines
         if channel_labels is not None:
+            # Label each lenslet on its own diagonal block, so the label names
+            # both the row block and the column block it sits in and the
+            # orientation cannot be misread.
+            from matplotlib import patheffects
+
+            halo = [patheffects.withStroke(linewidth=2.5, foreground=_face_color())]
             texts = []
             for b, name in enumerate(channel_labels):
-                center = b * n_wav + 0.5 * (n_wav - 1)
                 texts.append(
                     ax.text(
-                        center,
-                        n - 0.5,
+                        b * n_wav - 0.5 + 0.03 * n_wav,
+                        (b + 1) * n_wav - 0.5 - 0.03 * n_wav,
                         str(name),
-                        ha="center",
-                        va="bottom",
+                        ha="left",
+                        va="top",
                         fontsize="small",
                         color=_text_color(),
+                        path_effects=halo,
+                        zorder=5,
                     )
                 )
             artists["text"] = texts

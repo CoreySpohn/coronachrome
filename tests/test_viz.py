@@ -391,11 +391,11 @@ def test_update_moves_only_the_declared_artists(setup):
         np.ravel(result.artists["line"].get_data()), [xc[ch, 3], yc[ch, 3]]
     )
     assert readout.get_text() != text_before and "690 nm" in readout.get_text()
-    rows = np.asarray(ir.det_rows[ch, 3])
-    ys, xs = np.divmod(rows, DET_SHAPE[1])
-    assert box.get_x() == pytest.approx(xs.min() - 0.5)
-    assert box.get_y() == pytest.approx(ys.min() - 0.5)
-    assert box.get_width() == pytest.approx(xs.max() - xs.min() + 1)
+    # the box frames the 7 x 7 footprint window (half = 3) around the centroid
+    assert box.get_width() == pytest.approx(7.0)
+    assert box.get_height() == pytest.approx(7.0)
+    assert box.get_x() == pytest.approx(np.round(xc[ch, 3]) - 3.5)
+    assert box.get_y() == pytest.approx(np.round(yc[ch, 3]) - 3.5)
 
     after = _snapshot(result)
     assert np.array_equal(after["image"], before["image"])
@@ -406,6 +406,37 @@ def test_update_moves_only_the_declared_artists(setup):
     assert np.array_equal(after["scatter"], before["scatter"])
     assert np.allclose(after["edge"].bounds, before["edge"].bounds)
     assert after["n_children"] == before["n_children"]
+
+
+def test_scan_box_on_a_clipped_trace_stays_on_the_detector():
+    """A footprint cut by the detector edge frames only its on-detector pixels.
+
+    Lenslet-index (-2, 2) on a 60 x 80 detector runs off the left edge: its
+    600 nm footprint is wholly off, its 630 nm footprint is cut, and its
+    660 nm footprint is whole.
+    """
+    det_shape = (60, 80)
+    disperser = _disperser(detector_shape=det_shape)
+    with pytest.warns(UserWarning, match="fell off the detector"):
+        ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+    ch, half = 4, 3
+    result = viz.plot_traces(ir, disperser, LAM, channels=(ch,), scan_index=0)
+    box = _by_label(result.artists["ellipse"], "scan footprint")
+    assert not box.get_visible()  # 600 nm: nothing reaches the detector
+
+    xc, _ = detector_centroids(disperser, LAM)
+    for k in (1, 2):
+        result.update(k)
+        assert box.get_visible()
+        assert box.get_width() <= 2 * half + 1
+        assert box.get_height() <= 2 * half + 1
+        assert box.get_x() >= -0.5
+        assert box.get_x() + box.get_width() <= det_shape[1] - 0.5
+        right = np.round(float(xc[ch, k])) + half + 0.5
+        assert box.get_x() + box.get_width() == pytest.approx(right)
+    assert box.get_width() == 2 * half + 1  # 660 nm is whole
+    result.update(0)
+    assert not box.get_visible()
 
 
 def test_no_scan_means_no_updater(setup):
@@ -472,6 +503,31 @@ def test_multi_lenslet_covariance_draws_block_separators():
     ]
     with pytest.raises(ValueError, match="multiple"):
         viz.plot_channel_covariance(np.eye(5), wavelengths_nm=lam)
+
+
+def test_covariance_orientation_is_row_up_column_right():
+    """Entry [i, j] is drawn at x = j, y = i, and each label sits on its block.
+
+    An asymmetric matrix pins the orientation: a transpose or a flipped
+    origin would move the one nonzero off-diagonal entry.
+    """
+    lam = [600.0, 650.0, 700.0]
+    cov = np.eye(6)
+    cov[4, 1] = 0.5  # row 4 (lenslet B, 650 nm), column 1 (lenslet A, 650 nm)
+    result = viz.plot_channel_covariance(
+        cov, wavelengths_nm=lam, correlation=False, channel_labels=["A", "B"]
+    )
+    image = result.artists["image"]
+    assert np.array_equal(np.asarray(image.get_array()), cov)
+    assert image.origin == "lower"
+    x0, x1, y0, y1 = image.get_extent()
+    assert x0 < x1 and y0 < y1
+    ylim = result.ax.get_ylim()
+    assert ylim[0] < ylim[1]
+    for b, text in enumerate(result.artists["text"]):
+        x, y = text.get_position()
+        assert b * 3 - 0.5 < x < (b + 1) * 3 - 0.5
+        assert b * 3 - 0.5 < y < (b + 1) * 3 - 0.5
 
 
 def test_spectrum_covariance_output_plots_directly(setup):
