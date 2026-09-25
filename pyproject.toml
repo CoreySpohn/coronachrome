@@ -20,8 +20,23 @@ dependencies = ["jax", "equinox", "lineax", "optixstuff>=1.6.0"]
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
-docs = ["sphinx", "myst-nb", "sphinx-book-theme", "sphinx-autoapi"]
-test = ["pytest"]
+# The docs pages execute and draw through coronachrome.viz, so the docs extra
+# carries the viz extra.
+docs = [
+    "sphinx",
+    "myst-nb",
+    "sphinx-book-theme",
+    "sphinx-autoapi",
+    "ipykernel",
+    "coronachrome[viz]",
+]
+# The viz tests import matplotlib and eyepiece, so the test extra has to carry
+# the viz extra: without it those tests fail to import on a clean runner.
+test = ["pytest", "coronachrome[viz]"]
+# eyepiece>=0.4.0 carries PlotResult, imshow_log, imshow_diverging,
+# SourceStyles and record; hwostyle>=1.4.0 carries the semantic cmaps
+# (readouts) that coronachrome.viz reads directly.
+viz = ["eyepiece>=0.4.0", "hwostyle>=1.4.0"]
 
 [project.urls]
 Homepage = "https://github.com/CoreySpohn/coronachrome"
