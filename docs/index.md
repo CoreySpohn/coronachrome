@@ -86,6 +86,7 @@ three axes:
 :hidden:
 
 explanation/model
+explanation/lenslet_geometry
 explanation/sampling_contracts
 explanation/psflet_templates
 explanation/mathematical_formulation

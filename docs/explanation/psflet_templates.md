@@ -1,3 +1,14 @@
+---
+jupytext:
+  text_representation:
+    extension: .md
+    format_name: myst
+kernelspec:
+  display_name: Python 3
+  language: python
+  name: python3
+---
+
 # PSFlet template packs
 
 coronachrome's analytic PSFlets (pixel-integrated Gaussian and Moffat
@@ -70,7 +81,7 @@ save_psflet_pack("psflets.npz", pack)
 
 disperser = LensletDisperser(..., psflet_kind="template",
                              psflet_pack_path="psflets.npz")
-ir = build_ir(disperser, lam, fp_shape=fp_shape, fp_pixel_scale_lod=0.25)
+ir = build_ir(disperser, lam, fp_shape=fp_shape, fp_px_per_lenslet=4.0)
 ```
 
 {func}`~coronachrome.analytic_psflet_pack` is the reference emitter: it
@@ -88,6 +99,57 @@ footprints are placed, so a field-dependent wavelength solution rides in the
 same pack. Offsets beyond the tabulated extent contribute zero, and a build
 whose footprint half-width exceeds the tabulated extent warns about the
 clipped wings.
+
+The correction is applied once, to the centroid, never to the template: the
+template stays centered on its own centroid. The figure below builds a
+template-mode IR from a pack whose wavelength solution drifts along $y$ by
+$\pm 0.6$ px across the band. The thin line is the geometric trace from the
+dispersion model alone; the markers are the corrected centroids that
+{func}`coronachrome.build.detector_centroids` returns and the footprints are
+placed at, so the calibrated correction shows as the markers leaving the line.
+It is drawn with {func}`coronachrome.viz.plot_traces` (the `viz` extra).
+
+```{code-cell} ipython3
+import hwostyle
+import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
+from optixstuff.disperser import LensletDisperser
+
+from coronachrome import analytic_psflet_pack, build_ir
+from coronachrome import viz
+
+jax.config.update("jax_enable_x64", True)
+hwostyle.use("dark")
+
+lam = jnp.linspace(600.0, 720.0, 7)
+drift = np.zeros((1, lam.shape[0], 2))
+drift[0, :, 1] = np.linspace(-0.6, 0.6, lam.shape[0])  # (dx, dy) per wavelength
+pack = analytic_psflet_pack(
+    "gaussian", jnp.array([0.9]), lam, psflet_ref_nm=660.0, centroids=drift
+)
+disperser = LensletDisperser(
+    pitch_m=174e-6,
+    pixsize_m=13e-6,
+    angle_rad=float(np.arctan(0.5)),
+    lam_ref_nm=660.0,
+    pix_per_reselt=2.0,
+    dispersion_coeffs=jnp.array([140.0, 0.0]),
+    psflet_params=jnp.array([0.9]),
+    psflet_ref_nm=660.0,
+    grid_kind="square",
+    n_lenslets=5,
+    psflet_kind="template",
+    detector_shape=(96, 96),
+)
+ir = build_ir(disperser, lam, (40, 40), fp_px_per_lenslet=5.0, psflet_pack=pack)
+fig, ax = plt.subplots(figsize=(7.5, 3.2), layout="constrained")
+viz.plot_traces(
+    ir, disperser, lam, channels=(12,), psflet_pack=pack, colorbar="figure", ax=ax
+)
+plt.show()
+```
 
 ## Emitting packs from a physical-optics generator
 

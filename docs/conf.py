@@ -53,5 +53,9 @@ source_suffix = {
     ".rst": "restructuredtext",
     ".md": "myst-nb",
 }
-nb_execution_mode = "off"
+# Pages with jupytext front matter execute at build time, so a figure that
+# stops rendering fails the build instead of going stale.
+nb_execution_mode = "auto"
 nb_execution_timeout = 300
+nb_execution_raise_on_error = True
+nb_execution_show_tb = True

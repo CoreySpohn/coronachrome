@@ -1,3 +1,14 @@
+---
+jupytext:
+  text_representation:
+    extension: .md
+    format_name: myst
+kernelspec:
+  display_name: Python 3
+  language: python
+  name: python3
+---
+
 # Sampling contracts
 
 Two quantities in an IFS simulation look like free parameters but are not: how
@@ -54,6 +65,57 @@ see:
 - **Coverage**: any lenslet cell that extends past the cube bounds receives
   zero weight there, so that spaxel silently loses flux. The build counts the
   affected lenslets and warns.
+
+The figure shows both quantities on one plane. Each outline is a lenslet
+collection cell, the square that {func}`~coronachrome.build_ir` integrates the
+cube over, drawn by {func}`coronachrome.viz.plot_lenslet_cells` (the `viz`
+extra) over the cube's own pixels. A 0.0175 arcsec pitch on a 0.005 arcsec
+cube grid gives 3.5 cube pixels per cell, above the Nyquist floor of two. The
+cube is too small for this grid, though: the corner cells hang past its edge,
+and the build's coverage warning counts them.
+
+```{code-cell} ipython3
+import hwostyle
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
+from optixstuff.disperser import LensletDisperser
+
+from coronachrome import build_ir
+from coronachrome import viz
+
+hwostyle.use("dark")
+
+disperser = LensletDisperser(
+    pitch_m=174e-6,
+    pixsize_m=13e-6,
+    angle_rad=float(np.arctan(0.5)),
+    lam_ref_nm=660.0,
+    pix_per_reselt=2.0,
+    dispersion_coeffs=jnp.array([140.0, 0.0]),
+    psflet_params=jnp.array([0.9]),
+    psflet_ref_nm=660.0,
+    grid_kind="square",
+    n_lenslets=7,
+    psflet_kind="gaussian",
+    detector_shape=(128, 128),
+    sky_pitch_arcsec=0.0175,
+)
+fp_shape = (32, 32)
+lam = jnp.array([650.0, 660.0, 670.0])
+ir = build_ir(disperser, lam, fp_shape, fp_pixel_scale_arcsec=0.005)
+
+yy, xx = np.mgrid[: fp_shape[0], : fp_shape[1]]
+scene = np.exp(-((xx - 21.0) ** 2 + (yy - 12.0) ** 2) / (2 * 1.2**2)) + 1e-3
+viz.plot_lenslet_cells(
+    disperser,
+    fp_shape,
+    fp_pixel_scale_arcsec=0.005,
+    image=scene,
+    window=(-6.0, 37.0, -6.0, 37.0),
+)
+plt.show()
+```
 
 ## Spectral channels follow the Nyquist rule
 
