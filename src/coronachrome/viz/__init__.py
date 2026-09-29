@@ -17,6 +17,7 @@ the forward model applies rather than a second rendering of it.
 import importlib
 
 _LAZY = {
+    "footprint_box": "coronachrome.viz.lenslets",
     "plot_channel_covariance": "coronachrome.viz.covariance",
     "plot_lenslet_cells": "coronachrome.viz.lenslets",
     "plot_traces": "coronachrome.viz.lenslets",
@@ -32,7 +33,7 @@ def __getattr__(name):
         name: Attribute being looked up on ``coronachrome.viz``.
 
     Returns:
-        The requested plot function.
+        The requested function.
 
     Raises:
         AttributeError: If ``name`` is not one of the lazy re-exports.

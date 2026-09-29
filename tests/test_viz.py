@@ -120,6 +120,7 @@ def test_top_level_package_does_not_import_viz():
 def test_dir_lists_the_exports():
     """dir() advertises the lazily exported plot functions."""
     assert {
+        "footprint_box",
         "plot_channel_covariance",
         "plot_lenslet_cells",
         "plot_traces",
@@ -457,6 +458,262 @@ def test_update_records_through_eyepiece(setup, tmp_path):
             result.update(k)
             rec.frame()
     assert path.stat().st_size > 0
+
+
+# -- footprint box --------------------------------------------------------------
+
+
+def _weighted_pixels(ir, channel, index):
+    """Detector ``(x, y)`` of every footprint pixel that carries weight."""
+    rows = np.asarray(ir.det_rows[channel, index])
+    rows = rows[np.asarray(ir.det_vals[channel, index]) > 0]
+    ys, xs = np.divmod(rows, ir.det_shape[1])
+    return xs, ys
+
+
+def test_footprint_box_is_the_tight_pixel_edge_box_of_the_weighted_pixels(setup):
+    """Every weighted pixel lies inside the box, and each edge touches one."""
+    _, ir = setup
+    for ch, k in ((12, 0), (12, 4), (17, 2)):
+        x0, y0, w, h = viz.footprint_box(ir, ch, k)
+        xs, ys = _weighted_pixels(ir, ch, k)
+        assert x0 == xs.min() - 0.5 and x0 + w == xs.max() + 0.5
+        assert y0 == ys.min() - 0.5 and y0 + h == ys.max() + 0.5
+
+
+def test_footprint_box_is_the_box_plot_traces_draws(setup):
+    """The public box and the scan footprint rectangle agree at every bin."""
+    disperser, ir = setup
+    result = viz.plot_traces(ir, disperser, LAM, channels=(17,), scan_index=0)
+    box = _by_label(result.artists["ellipse"], "scan footprint")
+    for k in range(LAM.shape[0]):
+        result.update(k)
+        drawn = (box.get_x(), box.get_y(), box.get_width(), box.get_height())
+        assert drawn == viz.footprint_box(ir, 17, k)
+
+
+def test_footprint_box_keeps_only_the_on_detector_part():
+    """A clipped footprint is boxed on the detector; a lost one is None."""
+    det_shape = (60, 80)
+    disperser = _disperser(detector_shape=det_shape)
+    with pytest.warns(UserWarning, match="fell off the detector"):
+        ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+    assert viz.footprint_box(ir, 4, 0) is None  # 600 nm: wholly off
+    x0, _, w, _ = viz.footprint_box(ir, 4, 1)  # 630 nm: cut at the left edge
+    assert x0 == -0.5
+    assert w < 7
+
+
+# -- stretch, colormap, and mark halos ----------------------------------------
+
+
+def _decades(result):
+    """Dynamic range of a result's log norm, in decades."""
+    norm = result.artists["image"].norm
+    return np.log10(norm.vmax / norm.vmin)
+
+
+def _scene():
+    """A positive entrance image on FP_SHAPE."""
+    yy, xx = np.mgrid[: FP_SHAPE[0], : FP_SHAPE[1]]
+    return np.exp(-((xx - 24.0) ** 2 + (yy - 20.0) ** 2) / 50.0)
+
+
+@pytest.mark.parametrize("decades", [None, 2, 5.5])
+def test_log_stretch_spans_the_stated_decades(setup, decades):
+    """The returned norm spans ``decades`` below the peak (default 4 and 3)."""
+    disperser, ir = setup
+    kw = {} if decades is None else {"decades": decades}
+    cells = viz.plot_lenslet_cells(
+        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=_scene(), **kw
+    )
+    traces = viz.plot_traces(ir, disperser, LAM, channels=(12,), **kw)
+    assert _decades(cells) == pytest.approx(4 if decades is None else decades)
+    assert _decades(traces) == pytest.approx(3 if decades is None else decades)
+    peak = float(np.max(np.asarray(traces.artists["image"].get_array())))
+    assert traces.artists["image"].norm.vmax == pytest.approx(peak)
+
+
+def test_an_absolute_floor_overrides_decades(setup):
+    """With floor given, the norm starts at the floor whatever decades says."""
+    disperser, ir = setup
+    result = viz.plot_traces(ir, disperser, LAM, channels=(12,), floor=1e-6, decades=1)
+    assert result.artists["image"].norm.vmin == pytest.approx(1e-6)
+
+
+@pytest.mark.parametrize("bad", [0, -1.0])
+def test_decades_must_be_positive(setup, bad):
+    """A zero or negative stretch is refused, not drawn as an empty norm."""
+    disperser, ir = setup
+    with pytest.raises(ValueError, match="decades"):
+        viz.plot_traces(ir, disperser, LAM, channels=(12,), decades=bad)
+
+
+def test_cmap_is_applied_and_defaults_are_kept(setup):
+    """The cmap option sets the image colormap; None keeps each default."""
+    import hwostyle
+
+    disperser, ir = setup
+    traces = viz.plot_traces(ir, disperser, LAM, channels=(12,), cmap="magma")
+    cells = viz.plot_lenslet_cells(
+        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=_scene(), cmap="magma"
+    )
+    assert traces.artists["image"].get_cmap().name == "magma"
+    assert cells.artists["image"].get_cmap().name == "magma"
+
+    default = viz.plot_traces(ir, disperser, LAM, channels=(12,))
+    readouts = hwostyle.cmaps.readouts
+    name = readouts if isinstance(readouts, str) else readouts.name
+    assert default.artists["image"].get_cmap().name == name
+
+
+def _stroked(artist):
+    """Whether ``artist`` is drawn with a stroke path effect."""
+    from matplotlib import patheffects
+
+    return any(
+        isinstance(e, patheffects.withStroke) for e in artist.get_path_effects() or ()
+    )
+
+
+@pytest.mark.parametrize("halo", [False, True])
+def test_halo_marks_strokes_the_source_colored_marks_only(setup, halo):
+    """halo_marks strokes traces, centroids and the scan box, nothing else."""
+    disperser, ir = setup
+    result = viz.plot_traces(
+        ir, disperser, LAM, channels=(12, 17), scan_index=1, halo_marks=halo
+    )
+    ellipses = result.artists["ellipse"]
+    marks = [
+        _by_label(result.artists["lines"], "lenslet 12 trace"),
+        _by_label(result.artists["lines"], "lenslet 17 trace"),
+        result.artists["scatter"],
+        _by_label(ellipses, "scan footprint"),
+    ]
+    assert all(_stroked(m) == halo for m in marks)
+    assert not _stroked(_by_label(ellipses, "detector edge"))
+    # The reference markers carry their own halo either way.
+    assert _stroked(_by_label(result.artists["lines"], "detector trace origin"))
+    assert _stroked(result.artists["line"])
+
+
+# -- show: building a view up part by part ----------------------------------
+
+CELL_LABELS = {
+    "cells": [],  # the one PolyCollection, found as artists["collection"]
+    "lenslets": ["lenslet 12", "lenslet 17"],
+    "lenslet_labels": ["lenslet 12 label", "lenslet 17 label"],
+    "reference_marks": ["optical center", "lenslet-grid origin"],
+    "reference_labels": ["optical center label", "lenslet-grid origin label"],
+}
+TRACE_LABELS = {
+    "traces": ["lenslet 12 trace", "lenslet 17 trace"],
+    "centroids": ["PSFlet centroids"],
+    "wavelength_labels": ["600 nm label", "720 nm label"],
+    "detector_edge": ["detector edge"],
+    "reference_marks": ["detector trace origin"],
+    "reference_labels": ["detector trace origin label"],
+    "scan_marker": ["scan centroid"],
+    "scan_box": ["scan footprint"],
+    "readout": ["scan readout"],
+}
+
+
+def _part_artists(result, labels):
+    """The artists of a result carrying one of ``labels``."""
+    if not labels:
+        return [result.artists["collection"]]
+    return [a for a in _all_artists(result) if a.get_label() in labels]
+
+
+def _all_artists(result):
+    """Every artist in a result, flattened."""
+    out = []
+    for key, value in result.artists.items():
+        if key != "cbar":
+            out.extend(value if isinstance(value, list) else [value])
+    return out
+
+
+def _cells(setup, **kw):
+    """The entrance view with every part it can draw."""
+    disperser, _ = setup
+    return viz.plot_lenslet_cells(
+        disperser,
+        FP_SHAPE,
+        fp_px_per_lenslet=FP_PX,
+        image=_scene(),
+        channels=(12, 17),
+        optical_center_px=(23.5, 19.5),
+        **kw,
+    )
+
+
+def _traces(setup, **kw):
+    """The detector view with every part it can draw."""
+    disperser, ir = setup
+    return viz.plot_traces(ir, disperser, LAM, channels=(12, 17), scan_index=2, **kw)
+
+
+def test_part_names_are_the_documented_tuples():
+    """The part tuples name exactly the parts the views document."""
+    from coronachrome.viz import lenslets
+
+    assert lenslets.CELL_PARTS == tuple(CELL_LABELS)
+    assert lenslets.TRACE_PARTS == tuple(TRACE_LABELS)
+
+
+@pytest.mark.parametrize("draw", [_cells, _traces])
+def test_show_none_draws_every_part(setup, draw):
+    """With show None nothing the view creates is hidden."""
+    assert all(a.get_visible() for a in _all_artists(draw(setup)))
+
+
+@pytest.mark.parametrize(
+    ("draw", "labels"), [(_cells, CELL_LABELS), (_traces, TRACE_LABELS)]
+)
+def test_a_left_out_part_is_created_hidden_and_nothing_else_is(setup, draw, labels):
+    """Leaving one part out hides its artists only; all stay in the result."""
+    n_full = len(_all_artists(draw(setup)))
+    for part, names in labels.items():
+        result = draw(setup, show=[p for p in labels if p != part])
+        drawn = _all_artists(result)
+        assert len(drawn) == n_full
+        mine = _part_artists(result, names)
+        assert len(mine) == max(len(names), 1)
+        assert not any(a.get_visible() for a in mine)
+        assert all(a.get_visible() for a in drawn if a not in mine)
+
+
+@pytest.mark.parametrize("draw", [_cells, _traces])
+def test_unknown_part_is_refused(setup, draw):
+    """A misspelled part raises rather than silently drawing everything."""
+    with pytest.raises(ValueError, match="unknown show part"):
+        draw(setup, show=("labels",))
+
+
+def test_one_part_name_is_accepted_as_a_string(setup):
+    """A single part name is accepted in place of an iterable."""
+    result = _cells(setup, show="reference_marks")
+    marks = [a for a in _all_artists(result) if a is not result.artists["image"]]
+    visible = {a.get_label() for a in marks if a.get_visible()}
+    assert visible == {"optical center", "lenslet-grid origin"}
+
+
+def test_hidden_scan_parts_still_follow_the_scan(setup):
+    """Hidden scan parts follow update; a left-out scan box stays hidden."""
+    result = _traces(setup, show=("traces", "centroids"))
+    marker = result.artists["line"]
+    box = _by_label(result.artists["ellipse"], "scan footprint")
+    readout = _by_label(result.artists["text"], "scan readout")
+    for k in range(LAM.shape[0]):
+        result.update(k)
+        assert not marker.get_visible()
+        assert not box.get_visible()
+        assert not readout.get_visible()
+        drawn = (box.get_x(), box.get_y(), box.get_width(), box.get_height())
+        assert drawn == viz.footprint_box(setup[1], 12, k)
+        assert f"{float(LAM[k]):.0f} nm" in readout.get_text()
 
 
 # -- channel covariance -------------------------------------------------------

@@ -160,6 +160,93 @@ anim = ep.animate(result.fig, draw, range(len(lam)), fps=3)
 HTML(anim.jshtml(dpi=80))
 ```
 
+The box of any footprint, not only the scanned one, comes from
+{func}`~coronachrome.viz.footprint_box`: the pixel-edge rectangle around the
+detector pixels the IR gives weight for one lenslet and wavelength bin, in
+the same coordinates the views draw. Below, the boxes of two neighboring
+bins of lenslet 24 share several columns of pixels. The image is a noiseless
+model rather than a measured frame, so it is drawn in the intensity colormap
+(`cmap`) instead of the default `readouts` map, with a background-colored
+halo on the lenslet-colored marks (`halo_marks`) so they read over the
+bright trace. `decades` sets the log stretch, and the returned norm spans
+exactly that many decades, so a caption can state the stretch from the
+result. {func}`~coronachrome.viz.plot_lenslet_cells` takes the same `cmap`
+and `decades`.
+
+```{code-cell} ipython3
+from matplotlib.patches import Rectangle
+
+fig, ax = plt.subplots(figsize=(8.0, 3.6), layout="constrained")
+result = viz.plot_traces(
+    ir,
+    disperser,
+    lam,
+    channels=(a,),
+    styles=styles,
+    cmap=hwostyle.cmaps.intensity,
+    decades=4,
+    halo_marks=True,
+    colorbar="figure",
+    ax=ax,
+)
+for k, ls in ((4, "-"), (5, "--")):
+    x0, y0, w, h = viz.footprint_box(ir, a, k)
+    ax.add_patch(
+        Rectangle(
+            (x0, y0),
+            w,
+            h,
+            fill=False,
+            edgecolor=styles[f"lenslet {a}"]["color"],
+            linestyle=ls,
+            linewidth=1.6,
+            zorder=6,
+        )
+    )
+norm = result.artists["image"].norm
+ax.set_title(f"log stretch, {np.log10(norm.vmax / norm.vmin):.0f} decades")
+plt.show()
+```
+
+A figure that introduces the detector one idea at a time draws the same view
+with fewer parts. `show` names the parts to draw over the image; a part left
+out is still created, hidden and under its label, so every step of the
+sequence holds the same artists. The parts of
+{func}`~coronachrome.viz.plot_traces` are `traces`, `centroids`,
+`wavelength_labels`, `detector_edge`, `reference_marks`, `reference_labels`,
+`scan_marker`, `scan_box` and `readout`; those of
+{func}`~coronachrome.viz.plot_lenslet_cells` are `cells`, `lenslets`,
+`lenslet_labels`, `reference_marks` and `reference_labels`.
+
+```{code-cell} ipython3
+steps = {
+    "the traces": ("traces",),
+    "+ centroids": ("traces", "centroids", "wavelength_labels"),
+    "+ one PSFlet": (
+        "traces",
+        "centroids",
+        "wavelength_labels",
+        "scan_marker",
+        "scan_box",
+    ),
+}
+fig, axes = plt.subplots(3, 1, figsize=(7.0, 7.5), layout="constrained")
+for ax, (title, show) in zip(axes, steps.items()):
+    viz.plot_traces(
+        ir,
+        disperser,
+        lam,
+        channels=(a, b),
+        scan_index=4,
+        styles=styles,
+        show=show,
+        colorbar=False,
+        ax=ax,
+    )
+    ax.set_title(title, loc="left")
+plt.show()
+```
+
 ## Clipping at the detector edge
 
 A trace near the edge of the detector loses footprint pixels. The dashed line
