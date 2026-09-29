@@ -2,15 +2,25 @@
 
 Inverts the dispersion operator H_mono (detector -> per-lenslet spectra
 z, shape (n_channels, n_wav)). Linear tier: a matched filter, a noise-weighted
-least-squares solve (lineax NormalCG, matrix-free, stable gradients), and the
+least-squares solve (a lineax conjugate-gradient solve on the normal
+equations, matrix-free, with stable gradients), and the
 GLS covariance of that solve for per-wavelength error bars. The regularized
 positivity + total-variation extractor is a later addition (Plan 3).
+
+The module also carries the parametric face of the same operator: when the
+scene is described by a few basis functions (a planet template with one free
+amplitude per wavelength, plus a residual-speckle mode basis) rather than by a
+free spectrum per spaxel, the measurement covariance follows from the Fisher
+matrix of those basis functions, with the nuisance block marginalized. See
+:func:`marginal_covariance`.
 """
 
 import jax
 import jax.numpy as jnp
 import lineax as lx
 from jax import eval_shape
+
+from coronachrome.render import spatial_sample
 
 
 def matched_filter(renderer, detector):
@@ -32,7 +42,7 @@ def _equilibration(renderer, weights):
     ``w`` is the flattened per-detector-pixel weight (inverse noise variance
     ``1/N``; default uniform). ``d = 1 / sqrt(diag(H^T W H))`` is the column
     equilibration that gives the weighted normal operator a unit diagonal, so
-    the NormalCG / CG solves stay well-scaled and float32-safe (the det_vals
+    the CG solves stay well-scaled and float32-safe (the det_vals
     are O(0.1), so without it the normal operator's smallest eigenvalue sits
     below lineax's float32 breakdown safeguard and the solver returns NaN).
     """
@@ -49,7 +59,7 @@ def _equilibration(renderer, weights):
 
 
 def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
-    """Noise-weighted least-squares spectra via lineax NormalCG (matrix-free).
+    """Noise-weighted least-squares spectra via a lineax CG solve (matrix-free).
 
     Solves ``min_z || sqrt(w) * (H_mono z - y) ||^2 + damping * || z_eq ||^2``
     where ``z`` is the flattened (n_channels, n_wav) spectra, ``y`` is the
@@ -65,7 +75,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     (the number of wavelengths matched to the micro-spectrum's resolving power)
     is float32-safe even for large lenslet grids. An over-sampled spectrum makes
     neighbouring columns of ``H`` near-duplicate, so the normal equations become
-    near-singular and float32 NormalCG can break down (non-finite); recover by
+    near-singular and the float32 solve can break down (non-finite); recover by
     reducing the wavelength count, enabling x64 (the global ``jax_enable_x64``
     flag), or raising ``damping``. The covariance path
     (:func:`spectrum_covariance`) squares the conditioning and in practice needs
@@ -94,7 +104,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     sw = jnp.sqrt(w)
     z_struct = eval_shape(lambda: jnp.zeros(ncw, dtype=y.dtype))
     if damping > 0.0:
-        # Augment A -> [A; sqrt(damping) I], b -> [b; 0] so NormalCG solves the
+        # Augment A -> [A; sqrt(damping) I], b -> [b; 0] so the solver handles the
         # Tikhonov problem while keeping its (square-root) conditioning advantage
         # over forming H^T W H explicitly.
         sd = jnp.sqrt(jnp.asarray(damping, dtype=y.dtype))
@@ -107,7 +117,8 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
             lambda zp: sw * (h_mono @ (d * zp)), z_struct
         )
         rhs = sw * y
-    sol = lx.linear_solve(operator, rhs, solver=lx.NormalCG(rtol=rtol, atol=atol))
+    solver = lx.Normal(lx.CG(rtol=rtol, atol=atol))
+    sol = lx.linear_solve(operator, rhs, solver=solver)
     return (d * sol.value).reshape(ir.n_channels, ir.n_wav)
 
 
@@ -185,6 +196,180 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     # compilation O(1) and memory bounded, at the cost of running the solves
     # sequentially -- the right trade for an expensive, iterative body.
     return jax.lax.map(block_for_channel, jnp.asarray(channels))
+
+
+def amplitude_basis(template, ir):
+    """Channel-space basis for one free amplitude per wavelength.
+
+    The characterization science block: a source whose spatial distribution is
+    known at every wavelength (an off-axis PSF at the planet position, say) but
+    whose brightness at each wavelength is the unknown. Column ``j`` carries the
+    template's channel weights in wavelength slot ``j`` and zero elsewhere, so
+    contracting the basis against a spectrum reproduces the spatially sampled,
+    spectrally scaled template.
+
+    Args:
+        template: Focal-plane cube ``(n_wav, ny, nx)`` of the source's spatial
+            distribution per wavelength, in the units the amplitudes are
+            wanted in (normalize each plane to unit sum for amplitudes that
+            mean "total rate at this wavelength").
+        ir: The ``SpatialChannelIR`` whose spatial sampling defines the
+            contraction.
+
+    Returns:
+        Basis of shape ``(n_wav, n_channels, n_wav)``.
+    """
+    z = spatial_sample(template, ir)  # (n_channels, n_wav)
+    eye = jnp.eye(ir.n_wav, dtype=z.dtype)
+    return z[None] * eye[:, None, :]
+
+
+def _prior_precision(nuisance_cov, n_nuisance, dtype):
+    """Prior precision block from a covariance, a diagonal, or None (flat)."""
+    if nuisance_cov is None:
+        return jnp.zeros((n_nuisance, n_nuisance), dtype=dtype)
+    cov = jnp.asarray(nuisance_cov, dtype=dtype)
+    if cov.ndim == 1:
+        return jnp.diag(1.0 / cov)
+    return jnp.linalg.inv(cov)
+
+
+def _prior_covariance(nuisance_cov, dtype):
+    """Dense prior covariance from a covariance or a diagonal."""
+    if nuisance_cov is None:
+        raise ValueError(
+            "unmodeled_covariance needs a nuisance_cov: the inflation it "
+            "reports is the prior spread of the unmodeled term, which is "
+            "unbounded under a flat prior"
+        )
+    cov = jnp.asarray(nuisance_cov, dtype=dtype)
+    return jnp.diag(cov) if cov.ndim == 1 else cov
+
+
+def _basis_fisher(renderer, cols, weights):
+    """Fisher matrix ``C^T H^T W H C`` for channel-space basis columns.
+
+    Matrix-free in the detector dimension: each basis column is pushed through
+    the weighted normal operator ``H^T W H`` (one forward and one adjoint spmv),
+    so the largest array ever formed is ``(n_basis, n_channels * n_wav)`` rather
+    than ``(n_detector_pixels, n_basis)``. The columns are looped with
+    ``lax.map`` for the same bounded-memory reason as
+    :func:`spectrum_covariance`.
+    """
+    h_mono = renderer.H_mono
+    n_det = h_mono.shape[0]
+    if weights is None:
+        w = jnp.ones(n_det, dtype=h_mono.data.dtype)
+    else:
+        w = jnp.asarray(weights).reshape(-1)
+    flat = jnp.asarray(cols).reshape(cols.shape[0], -1)  # (n_basis, ncw)
+
+    def normal_mv(v):
+        return h_mono.T @ (w * (h_mono @ v))
+
+    pushed = jax.lax.map(normal_mv, flat)  # (n_basis, ncw)
+    fisher = flat @ pushed.T
+    return 0.5 * (fisher + fisher.T)
+
+
+def _split_fisher(renderer, science, nuisance, weights):
+    """Fisher blocks of the stacked (science, nuisance) basis."""
+    n_sci = science.shape[0]
+    stacked = jnp.concatenate([jnp.asarray(science), jnp.asarray(nuisance)], axis=0)
+    fisher = _basis_fisher(renderer, stacked, weights)
+    return (
+        fisher[:n_sci, :n_sci],
+        fisher[:n_sci, n_sci:],
+        fisher[n_sci:, n_sci:],
+    )
+
+
+def marginal_covariance(
+    renderer, science, nuisance=None, weights=None, nuisance_cov=None
+):
+    """Covariance of the science amplitudes with the nuisance block marginalized.
+
+    The honest measurement covariance when the scene is parameterized rather
+    than extracted spaxel by spaxel. With a science basis ``S`` and a nuisance
+    basis ``N`` (both in channel space), the joint Fisher matrix of the
+    detector likelihood is ``F = [S N]^T H^T W H [S N]``, and marginalizing the
+    nuisance leaves the Schur complement
+
+    ``Cov = (F_ss - F_sn (F_nn + Sigma_nu^-1)^-1 F_ns)^-1``.
+
+    This is what :func:`spectrum_covariance` cannot express. ``R_spec =
+    (H^T W H)^-1`` is the covariance *conditional on a known residual speckle
+    field*; pass a speckle mode basis here and the field's uncertainty enters
+    the science error bars by construction. The two limits bracket it: with
+    ``nuisance=None`` this returns the conditional covariance (speckle known
+    exactly), and :func:`unmodeled_covariance` returns the covariance of an
+    estimator that ignores the nuisance entirely. Conditional <= marginal <=
+    unmodeled always, since ``F_nn - F_ns F_ss^-1 F_sn`` is positive
+    semidefinite.
+
+    Precision: this forms the basis Fisher matrix explicitly, squaring the
+    conditioning of ``H``, so run it under x64 (the global ``jax_enable_x64``
+    flag) as for :func:`spectrum_covariance`.
+
+    Args:
+        renderer: An ``IFSRenderer`` holding the dispersion operator.
+        science: Channel-space science basis ``(n_science, n_channels, n_wav)``,
+            for example from :func:`amplitude_basis`.
+        nuisance: Channel-space nuisance basis ``(n_nuisance, n_channels,
+            n_wav)``, for example ``jax.vmap(spatial_sample, in_axes=(0, None))``
+            over a speckle mode cube stack. ``None`` (default) returns the
+            conditional covariance.
+        weights: Per-detector-pixel inverse noise variance ``1 / N`` (default
+            uniform), as for :func:`lstsq`.
+        nuisance_cov: Prior covariance of the nuisance coefficients: a full
+            ``(n_nuisance, n_nuisance)`` matrix, a 1-D per-mode variance (the
+            generator PSD), or ``None`` for an improper flat prior, which needs
+            a nonsingular ``F_nn``.
+
+    Returns:
+        Covariance of shape ``(n_science, n_science)``.
+    """
+    if nuisance is None:
+        return jnp.linalg.inv(_basis_fisher(renderer, jnp.asarray(science), weights))
+    f_ss, f_sn, f_nn = _split_fisher(renderer, science, nuisance, weights)
+    prec = f_nn + _prior_precision(nuisance_cov, f_nn.shape[0], f_nn.dtype)
+    return jnp.linalg.inv(f_ss - f_sn @ jnp.linalg.solve(prec, f_sn.T))
+
+
+def unmodeled_covariance(renderer, science, nuisance, weights=None, nuisance_cov=None):
+    """Covariance of a science estimator that ignores the nuisance block.
+
+    The practiced pipeline: fit (or extract) the science amplitudes as if the
+    residual speckle field were absent, then live with the fact that it is not.
+    The estimator is unbiased only in the mean over the nuisance prior, and its
+    covariance picks up a nuisance-projection term,
+
+    ``Cov = C + S Sigma_nu S^T``,  ``C = F_ss^-1``,  ``S = C F_sn``,
+
+    which is non-diagonal, correlated across wavelength, and therefore not
+    recoverable by inflating per-wavelength error bars. The ratio of this to
+    :func:`marginal_covariance` is what a joint fit buys; the ratio of this to
+    the conditional covariance (``nuisance=None``) is how much a pipeline
+    quoting ``R_spec`` underquotes its own error.
+
+    Args:
+        renderer: An ``IFSRenderer`` holding the dispersion operator.
+        science: Channel-space science basis ``(n_science, n_channels, n_wav)``.
+        nuisance: Channel-space nuisance basis ``(n_nuisance, n_channels,
+            n_wav)``.
+        weights: Per-detector-pixel inverse noise variance (default uniform).
+        nuisance_cov: Prior covariance of the nuisance coefficients (matrix or
+            1-D per-mode variance). Required: the inflation is unbounded under
+            a flat prior.
+
+    Returns:
+        Covariance of shape ``(n_science, n_science)``.
+    """
+    f_ss, f_sn, _ = _split_fisher(renderer, science, nuisance, weights)
+    prior_cov = _prior_covariance(nuisance_cov, f_ss.dtype)
+    conditional = jnp.linalg.inv(f_ss)
+    sens = conditional @ f_sn
+    return conditional + sens @ prior_cov @ sens.T
 
 
 def spectrum_errorbars(renderer, weights=None, channels=None, rtol=1e-6, atol=1e-6):
