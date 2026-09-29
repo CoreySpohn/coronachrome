@@ -137,7 +137,8 @@ statistically complete:
 - **Least squares** ({func}`~coronachrome.lstsq`). Solves
   $\min_z \lVert \sqrt{W}\,(Hz - y) \rVert^2$, the noise-weighted best fit. Accounting
   for the overlap between channels removes the cross-talk bias. It is solved
-  matrix-free with a conjugate-gradient method (lineax NormalCG); a weight-aware
+  matrix-free with a conjugate-gradient method on the normal equations (lineax
+`Normal(CG)`); a weight-aware
   rescaling of the columns equilibrates the normal operator to a unit diagonal so the
   solve stays well scaled. An optional Tikhonov `damping` regularizes near-degenerate
   cases (see precision below).
@@ -164,7 +165,7 @@ is set. The forward model, the matched filter, and a well-sampled least-squares
 extraction are float32-safe even for large lenslet grids, helped by the column
 equilibration above. Two cases need more care. An over-sampled spectrum (more
 wavelengths than the micro-spectrum resolves) makes neighboring columns of $H$
-near-duplicate, so the normal equations turn near-singular and float32 NormalCG can
+near-duplicate, so the normal equations turn near-singular and the float32 solve can
 break down; reduce the wavelength count, set the global `x64` flag, or raise the
 `damping`. The covariance forms the normal operator explicitly, which squares the
 conditioning, so in practice it should be run under `x64`.

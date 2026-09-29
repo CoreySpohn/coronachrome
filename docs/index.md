@@ -24,6 +24,10 @@ so it is JIT-compilable, GPU-capable, and differentiable end to end.
   for per-wavelength error bars.
 - **Differentiable.** The forward pass and the extraction both carry gradients, so
   coronachrome can sit inside a fitting or spectral-retrieval loop.
+- **Honest error bars.** The extraction covariance is conditional on a known
+  residual speckle field. When the field is uncertain, the same operator gives
+  the covariance with that uncertainty marginalized instead of assumed away.
+  See [Measurement covariance](explanation/measurement_covariance).
 - **Sampling contracts.** The focal-plane pixels per lenslet are derived from the
   descriptor's on-sky pitch and the cube plate scale (with build-time coverage and
   Nyquist diagnostics), and spectral channel grids follow the one-channel-per-
@@ -89,6 +93,7 @@ explanation/model
 explanation/lenslet_geometry
 explanation/sampling_contracts
 explanation/psflet_templates
+explanation/measurement_covariance
 explanation/mathematical_formulation
 explanation/crispy_heritage
 ```

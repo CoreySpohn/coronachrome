@@ -2,10 +2,13 @@
 
 from coronachrome.build import build_ir
 from coronachrome.extract import (
+    amplitude_basis,
     lstsq,
+    marginal_covariance,
     matched_filter,
     spectrum_covariance,
     spectrum_errorbars,
+    unmodeled_covariance,
 )
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.render import IFSRenderer, spatial_sample
@@ -28,12 +31,14 @@ __all__ = [
     "IFSRenderer",
     "PsfletPack",
     "SpatialChannelIR",
+    "amplitude_basis",
     "analytic_psflet_pack",
     "build_ir",
     "channel_centers",
     "channel_edges",
     "load_psflet_pack",
     "lstsq",
+    "marginal_covariance",
     "matched_filter",
     "n_nyquist_channels",
     "rebin_channels",
@@ -43,4 +48,5 @@ __all__ = [
     "spectrum_covariance",
     "spectrum_errorbars",
     "template_weights",
+    "unmodeled_covariance",
 ]
