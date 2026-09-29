@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0](https://github.com/CoreySpohn/coronachrome/compare/v1.0.0...v1.1.0) (2026-09-29)
+
+
+### Features
+
+* **viz:** add footprint_box and cmap, decades, halo_marks view options ([3cf9dc4](https://github.com/CoreySpohn/coronachrome/commit/3cf9dc45d145c0c69c6b5a9cd8726b67b462bdb9))
+* **viz:** add show parts to plot_lenslet_cells and plot_traces ([464e30f](https://github.com/CoreySpohn/coronachrome/commit/464e30faf4aa4077de7285e6b10f46e9b5140755))
+
 ## [1.0.0](https://github.com/CoreySpohn/coronachrome/compare/v0.3.0...v1.0.0) (2026-09-29)
 
 
