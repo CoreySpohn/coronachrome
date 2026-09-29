@@ -160,6 +160,54 @@ anim = ep.animate(result.fig, draw, range(len(lam)), fps=3)
 HTML(anim.jshtml(dpi=80))
 ```
 
+The box of any footprint, not only the scanned one, comes from
+{func}`~coronachrome.viz.footprint_box`: the pixel-edge rectangle around the
+detector pixels the IR gives weight for one lenslet and wavelength bin, in
+the same coordinates the views draw. Below, the boxes of two neighboring
+bins of lenslet 24 share several columns of pixels. The image is a noiseless
+model rather than a measured frame, so it is drawn in the intensity colormap
+(`cmap`) instead of the default `readouts` map, with a background-colored
+halo on the lenslet-colored marks (`halo_marks`) so they read over the
+bright trace. `decades` sets the log stretch, and the returned norm spans
+exactly that many decades, so a caption can state the stretch from the
+result. {func}`~coronachrome.viz.plot_lenslet_cells` takes the same `cmap`
+and `decades`.
+
+```{code-cell} ipython3
+from matplotlib.patches import Rectangle
+
+fig, ax = plt.subplots(figsize=(8.0, 3.6), layout="constrained")
+result = viz.plot_traces(
+    ir,
+    disperser,
+    lam,
+    channels=(a,),
+    styles=styles,
+    cmap=hwostyle.cmaps.intensity,
+    decades=4,
+    halo_marks=True,
+    colorbar="figure",
+    ax=ax,
+)
+for k, ls in ((4, "-"), (5, "--")):
+    x0, y0, w, h = viz.footprint_box(ir, a, k)
+    ax.add_patch(
+        Rectangle(
+            (x0, y0),
+            w,
+            h,
+            fill=False,
+            edgecolor=styles[f"lenslet {a}"]["color"],
+            linestyle=ls,
+            linewidth=1.6,
+            zorder=6,
+        )
+    )
+norm = result.artists["image"].norm
+ax.set_title(f"log stretch, {np.log10(norm.vmax / norm.vmin):.0f} decades")
+plt.show()
+```
+
 ## Clipping at the detector edge
 
 A trace near the edge of the detector loses footprint pixels. The dashed line

@@ -120,6 +120,7 @@ def test_top_level_package_does_not_import_viz():
 def test_dir_lists_the_exports():
     """dir() advertises the lazily exported plot functions."""
     assert {
+        "footprint_box",
         "plot_channel_covariance",
         "plot_lenslet_cells",
         "plot_traces",
@@ -457,6 +458,143 @@ def test_update_records_through_eyepiece(setup, tmp_path):
             result.update(k)
             rec.frame()
     assert path.stat().st_size > 0
+
+
+# -- footprint box --------------------------------------------------------------
+
+
+def _weighted_pixels(ir, channel, index):
+    """Detector ``(x, y)`` of every footprint pixel that carries weight."""
+    rows = np.asarray(ir.det_rows[channel, index])
+    rows = rows[np.asarray(ir.det_vals[channel, index]) > 0]
+    ys, xs = np.divmod(rows, ir.det_shape[1])
+    return xs, ys
+
+
+def test_footprint_box_is_the_tight_pixel_edge_box_of_the_weighted_pixels(setup):
+    """Every weighted pixel lies inside the box, and each edge touches one."""
+    _, ir = setup
+    for ch, k in ((12, 0), (12, 4), (17, 2)):
+        x0, y0, w, h = viz.footprint_box(ir, ch, k)
+        xs, ys = _weighted_pixels(ir, ch, k)
+        assert x0 == xs.min() - 0.5 and x0 + w == xs.max() + 0.5
+        assert y0 == ys.min() - 0.5 and y0 + h == ys.max() + 0.5
+
+
+def test_footprint_box_is_the_box_plot_traces_draws(setup):
+    """The public box and the scan footprint rectangle agree at every bin."""
+    disperser, ir = setup
+    result = viz.plot_traces(ir, disperser, LAM, channels=(17,), scan_index=0)
+    box = _by_label(result.artists["ellipse"], "scan footprint")
+    for k in range(LAM.shape[0]):
+        result.update(k)
+        drawn = (box.get_x(), box.get_y(), box.get_width(), box.get_height())
+        assert drawn == viz.footprint_box(ir, 17, k)
+
+
+def test_footprint_box_keeps_only_the_on_detector_part():
+    """A clipped footprint is boxed on the detector; a lost one is None."""
+    det_shape = (60, 80)
+    disperser = _disperser(detector_shape=det_shape)
+    with pytest.warns(UserWarning, match="fell off the detector"):
+        ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+    assert viz.footprint_box(ir, 4, 0) is None  # 600 nm: wholly off
+    x0, _, w, _ = viz.footprint_box(ir, 4, 1)  # 630 nm: cut at the left edge
+    assert x0 == -0.5
+    assert w < 7
+
+
+# -- stretch, colormap, and mark halos ----------------------------------------
+
+
+def _decades(result):
+    """Dynamic range of a result's log norm, in decades."""
+    norm = result.artists["image"].norm
+    return np.log10(norm.vmax / norm.vmin)
+
+
+def _scene():
+    """A positive entrance image on FP_SHAPE."""
+    yy, xx = np.mgrid[: FP_SHAPE[0], : FP_SHAPE[1]]
+    return np.exp(-((xx - 24.0) ** 2 + (yy - 20.0) ** 2) / 50.0)
+
+
+@pytest.mark.parametrize("decades", [None, 2, 5.5])
+def test_log_stretch_spans_the_stated_decades(setup, decades):
+    """The returned norm spans ``decades`` below the peak (default 4 and 3)."""
+    disperser, ir = setup
+    kw = {} if decades is None else {"decades": decades}
+    cells = viz.plot_lenslet_cells(
+        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=_scene(), **kw
+    )
+    traces = viz.plot_traces(ir, disperser, LAM, channels=(12,), **kw)
+    assert _decades(cells) == pytest.approx(4 if decades is None else decades)
+    assert _decades(traces) == pytest.approx(3 if decades is None else decades)
+    peak = float(np.max(np.asarray(traces.artists["image"].get_array())))
+    assert traces.artists["image"].norm.vmax == pytest.approx(peak)
+
+
+def test_an_absolute_floor_overrides_decades(setup):
+    """With floor given, the norm starts at the floor whatever decades says."""
+    disperser, ir = setup
+    result = viz.plot_traces(ir, disperser, LAM, channels=(12,), floor=1e-6, decades=1)
+    assert result.artists["image"].norm.vmin == pytest.approx(1e-6)
+
+
+@pytest.mark.parametrize("bad", [0, -1.0])
+def test_decades_must_be_positive(setup, bad):
+    """A zero or negative stretch is refused, not drawn as an empty norm."""
+    disperser, ir = setup
+    with pytest.raises(ValueError, match="decades"):
+        viz.plot_traces(ir, disperser, LAM, channels=(12,), decades=bad)
+
+
+def test_cmap_is_applied_and_defaults_are_kept(setup):
+    """The cmap option sets the image colormap; None keeps each default."""
+    import hwostyle
+
+    disperser, ir = setup
+    traces = viz.plot_traces(ir, disperser, LAM, channels=(12,), cmap="magma")
+    cells = viz.plot_lenslet_cells(
+        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=_scene(), cmap="magma"
+    )
+    assert traces.artists["image"].get_cmap().name == "magma"
+    assert cells.artists["image"].get_cmap().name == "magma"
+
+    default = viz.plot_traces(ir, disperser, LAM, channels=(12,))
+    readouts = hwostyle.cmaps.readouts
+    name = readouts if isinstance(readouts, str) else readouts.name
+    assert default.artists["image"].get_cmap().name == name
+
+
+def _stroked(artist):
+    """Whether ``artist`` is drawn with a stroke path effect."""
+    from matplotlib import patheffects
+
+    return any(
+        isinstance(e, patheffects.withStroke) for e in artist.get_path_effects() or ()
+    )
+
+
+@pytest.mark.parametrize("halo", [False, True])
+def test_halo_marks_strokes_the_source_colored_marks_only(setup, halo):
+    """halo_marks strokes traces, centroids and the scan box, nothing else."""
+    disperser, ir = setup
+    result = viz.plot_traces(
+        ir, disperser, LAM, channels=(12, 17), scan_index=1, halo_marks=halo
+    )
+    ellipses = result.artists["ellipse"]
+    marks = [
+        _by_label(result.artists["lines"], "lenslet 12 trace"),
+        _by_label(result.artists["lines"], "lenslet 17 trace"),
+        result.artists["scatter"],
+        _by_label(ellipses, "scan footprint"),
+    ]
+    assert all(_stroked(m) == halo for m in marks)
+    assert not _stroked(_by_label(ellipses, "detector edge"))
+    # The reference markers carry their own halo either way.
+    assert _stroked(_by_label(result.artists["lines"], "detector trace origin"))
+    assert _stroked(result.artists["line"])
 
 
 # -- channel covariance -------------------------------------------------------
