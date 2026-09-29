@@ -74,13 +74,12 @@ pure-config hardware description stays possible:
 ```python
 from coronachrome import analytic_psflet_pack, build_ir, save_psflet_pack
 
-pack = analytic_psflet_pack(
-    "gaussian", jnp.array([0.7]), lam, psflet_ref_nm=660.0
-)
+pack = analytic_psflet_pack("gaussian", jnp.array([0.7]), lam, psflet_ref_nm=660.0)
 save_psflet_pack("psflets.npz", pack)
 
-disperser = LensletDisperser(..., psflet_kind="template",
-                             psflet_pack_path="psflets.npz")
+disperser = LensletDisperser(
+    ..., psflet_kind="template", psflet_pack_path="psflets.npz"
+)
 ir = build_ir(disperser, lam, fp_shape=fp_shape, fp_px_per_lenslet=4.0)
 ```
 
