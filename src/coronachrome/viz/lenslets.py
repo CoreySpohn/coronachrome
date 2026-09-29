@@ -63,6 +63,60 @@ def _halo(linewidth=2.5):
     return [patheffects.withStroke(linewidth=linewidth, foreground=face)]
 
 
+CELL_PARTS = (
+    "cells",
+    "lenslets",
+    "lenslet_labels",
+    "reference_marks",
+    "reference_labels",
+)
+TRACE_PARTS = (
+    "traces",
+    "centroids",
+    "wavelength_labels",
+    "detector_edge",
+    "reference_marks",
+    "reference_labels",
+    "scan_marker",
+    "scan_box",
+    "readout",
+)
+
+
+def _resolve_show(show, parts):
+    """The set of parts to draw, from a view's ``show`` argument.
+
+    Args:
+        show: None (every part), one part name, or an iterable of names.
+        parts: Every part name the view knows, in documentation order.
+
+    Returns:
+        A ``frozenset`` of part names.
+
+    Raises:
+        ValueError: If a name is not one of ``parts``.
+    """
+    if show is None:
+        return frozenset(parts)
+    names = (show,) if isinstance(show, str) else tuple(show)
+    unknown = [n for n in names if n not in parts]
+    if unknown:
+        raise ValueError(f"unknown show part(s) {unknown}; choose from {parts}")
+    return frozenset(names)
+
+
+def _hide(artists_by_part, shown):
+    """Hide every artist of a part that is not in ``shown``.
+
+    A hidden artist is still created, still in the result and still moved
+    by ``update``; a caller reveals it later with ``set_visible(True)``.
+    """
+    for part, artists in artists_by_part.items():
+        if part not in shown:
+            for artist in artists:
+                artist.set_visible(False)
+
+
 def _source_name(channel):
     """The source name a highlighted lenslet is registered under."""
     return f"lenslet {int(channel)}"
@@ -137,6 +191,7 @@ def _origin_marker(ax, xy, marker, label, text_offset_pt, color, artists):
     text = ax.annotate(
         label,
         xy,
+        label=f"{label} label",
         xytext=text_offset_pt,
         textcoords="offset points",
         color=color,
@@ -148,6 +203,7 @@ def _origin_marker(ax, xy, marker, label, text_offset_pt, color, artists):
     )
     artists.setdefault("lines", []).append(line)
     artists.setdefault("text", []).append(text)
+    return line, text
 
 
 def plot_lenslet_cells(
@@ -167,6 +223,7 @@ def plot_lenslet_cells(
     floor=None,
     decades=4,
     cmap=None,
+    show=None,
     colorbar=True,
     ax=None,
     imshow_kw=None,
@@ -223,6 +280,15 @@ def plot_lenslet_cells(
             ``decades``, ready for a caption or an on-figure note.
         cmap: Colormap for ``image`` (a ``Colormap`` or a registered name);
             None uses the eyepiece ``intensity`` map of the active mode.
+        show: The parts to draw over the image, for a figure that builds
+            the view up part by part; None draws them all. One name or an
+            iterable of names from ``CELL_PARTS``: ``"cells"`` (every cell
+            outline), ``"lenslets"`` (the ``channels`` cell outlines),
+            ``"lenslet_labels"`` (their names), ``"reference_marks"`` (the
+            optical-center and lenslet-grid-origin markers) and
+            ``"reference_labels"`` (the markers' names). A part left out is
+            created hidden (``set_visible(False)``) and stays in the result
+            under its label, so a later figure can reveal it.
         colorbar: Colorbar placement for ``image``, as in
             ``eyepiece.imshow_log`` (True for an inset, ``"figure"``, or False).
         ax: Axes to draw into. None creates a figure.
@@ -237,9 +303,17 @@ def plot_lenslet_cells(
         reference markers, labeled ``"optical center"`` and
         ``"lenslet-grid origin"``), ``"text"`` (their labels and the lenslet
         labels), plus ``"image"`` when ``image`` is given and ``"cbar"``
-        when it also carries a colorbar.
+        when it also carries a colorbar. Every drawn artist is named by its
+        label: ``"lenslet <k>"`` and ``"lenslet <k> label"`` for a
+        highlighted cell and its name, ``"optical center"`` and
+        ``"lenslet-grid origin"`` for the markers, each with a
+        ``" label"`` text.
         ``update`` is None.
+
+    Raises:
+        ValueError: If ``show`` names an unknown part.
     """
+    shown = _resolve_show(show, CELL_PARTS)
     ep = eyepiece()
     import matplotlib.pyplot as plt
     from matplotlib.collections import PolyCollection
@@ -330,6 +404,7 @@ def plot_lenslet_cells(
             ax.annotate(
                 _source_name(ch),
                 (float(top[0]), float(top[1])),
+                label=f"{_source_name(ch)} label",
                 xytext=(0, 4),
                 textcoords="offset points",
                 color=style["color"],
@@ -345,15 +420,31 @@ def plot_lenslet_cells(
     if texts:
         artists["text"] = texts
 
+    lenslet_texts = list(texts)
     ref = _neutral(1.0)
+    refs = []
     if optical_center_px is not None:
-        _origin_marker(
-            ax, optical_center_px, "x", "optical center", (-8, 8), ref, artists
+        refs.append(
+            _origin_marker(
+                ax, optical_center_px, "x", "optical center", (-8, 8), ref, artists
+            )
         )
     if grid_origin is not None:
-        _origin_marker(
-            ax, grid_origin, "s", "lenslet-grid origin", (8, -8), ref, artists
+        refs.append(
+            _origin_marker(
+                ax, grid_origin, "s", "lenslet-grid origin", (8, -8), ref, artists
+            )
         )
+    _hide(
+        {
+            "cells": [cells],
+            "lenslets": patches,
+            "lenslet_labels": lenslet_texts,
+            "reference_marks": [line for line, _ in refs],
+            "reference_labels": [text for _, text in refs],
+        },
+        shown,
+    )
 
     x0, x1, y0, y1 = extent if window is None else window
     ax.set_xlim(x0, x1)
@@ -449,6 +540,7 @@ def plot_traces(
     vmax=None,
     cmap=None,
     halo_marks=False,
+    show=None,
     colorbar=True,
     ax=None,
     imshow_kw=None,
@@ -529,6 +621,21 @@ def plot_traces(
             scan footprint box with a background-colored halo, so marks in
             the source colors stay visible where they cross the bright end
             of the colormap. The reference markers carry a halo either way.
+        show: The parts to draw over the image, for a figure that builds
+            the view up part by part; None draws them all. One name or an
+            iterable of names from ``TRACE_PARTS``: ``"traces"`` (the
+            geometric trace lines), ``"centroids"`` (the marked centroids),
+            ``"wavelength_labels"`` (the end wavelengths of the first
+            channel), ``"detector_edge"``, ``"reference_marks"`` (the
+            trace-origin marker), ``"reference_labels"`` (its name),
+            ``"scan_marker"`` (the highlighted centroid), ``"scan_box"``
+            (its footprint box, which, left out, stays hidden through
+            ``update``) and ``"readout"``. A part left out is
+            created hidden (``set_visible(False)``), stays in the result
+            under its label and is still moved by ``update``, so a later
+            figure can reveal it. ``show_trace_origin`` and
+            ``show_detector_edge`` decide whether those artists exist at
+            all; ``show`` only hides what exists.
         colorbar: Colorbar placement, as in ``eyepiece.imshow_log`` (True for
             an inset, ``"figure"``, or False).
         ax: Axes to draw into. None creates a figure.
@@ -550,8 +657,17 @@ def plot_traces(
         ``"line"``, the scan footprint rectangle (its extent, and its
         visibility when a footprint lies wholly off the detector), and the
         readout text; the image, its color scale, and the axis limits never
-        change.
+        change. Every drawn artist is named by its label: ``"lenslet <k>
+        trace"``, ``"PSFlet centroids"``, ``"<wavelength> nm label"`` for
+        the two end labels, ``"detector edge"``, ``"detector trace
+        origin"`` and ``"detector trace origin label"``, ``"scan
+        centroid"``, ``"scan footprint"`` and ``"scan readout"``.
+
+    Raises:
+        ValueError: If ``show`` names an unknown part, or on inconsistent
+            inputs.
     """
+    shown = _resolve_show(show, TRACE_PARTS)
     ep = eyepiece()
     import hwostyle
     import matplotlib.pyplot as plt
@@ -636,6 +752,7 @@ def plot_traces(
         label="PSFlet centroids",
     )
 
+    trace_lines = list(lines)
     first = channels[0]
     text_color = _neutral(1.0)
     for k, ha in ((0, "right"), (lam.shape[0] - 1, "left")):
@@ -643,6 +760,7 @@ def plot_traces(
             ax.annotate(
                 f"{lam[k]:.0f} nm",
                 (float(xc[first, k]), float(yc[first, k])),
+                label=f"{lam[k]:.0f} nm label",
                 xytext=(-7 if ha == "right" else 7, 7),
                 textcoords="offset points",
                 color=styles[_source_name(first)]["color"],
@@ -654,6 +772,11 @@ def plot_traces(
             )
         )
 
+    wavelength_texts = list(texts)
+    parts = {name: [] for name in TRACE_PARTS}
+    parts["traces"] = trace_lines
+    parts["centroids"] = [artists["scatter"]]
+    parts["wavelength_labels"] = wavelength_texts
     ellipses = []
     if show_detector_edge:
         ny, nx = det_shape
@@ -670,9 +793,10 @@ def plot_traces(
         )
         ax.add_patch(edge)
         ellipses.append(edge)
+        parts["detector_edge"] = [edge]
 
     if show_trace_origin and trace_origin is not None:
-        _origin_marker(
+        origin_line, origin_text = _origin_marker(
             ax,
             trace_origin,
             "o",
@@ -681,6 +805,8 @@ def plot_traces(
             text_color,
             {"lines": lines, "text": texts},
         )
+        parts["reference_marks"] = [origin_line]
+        parts["reference_labels"] = [origin_text]
 
     update = None
     if scan_index is not None:
@@ -699,6 +825,7 @@ def plot_traces(
             zorder=7,
         )
         artists["line"] = marker
+        parts["scan_marker"] = [marker]
         box = None
         if ir is not None:
             box = Rectangle(
@@ -716,7 +843,7 @@ def plot_traces(
 
         def place_box(index):
             extent = footprint_box(ir, sc, index)
-            box.set_visible(extent is not None)
+            box.set_visible(extent is not None and "scan_box" in shown)
             if extent is not None:
                 bx, by, bw, bh = extent
                 box.set_xy((bx, by))
@@ -744,6 +871,7 @@ def plot_traces(
             zorder=7,
         )
         texts.append(readout)
+        parts["readout"] = [readout]
 
         def update(index):
             """Move the highlight to wavelength index ``index``."""
@@ -752,8 +880,11 @@ def plot_traces(
                 place_box(index)
             readout.set_text(rf"{_source_name(sc)}, $\lambda$ = {lam[index]:.0f} nm")
 
+    parts.pop("scan_box")  # place_box owns the box's visibility
+    _hide(parts, shown)
+
     if halo_marks:
-        marks = [*lines[: len(channels)], artists["scatter"]]
+        marks = [*trace_lines, artists["scatter"]]
         marks += [p for p in ellipses if p.get_label() == "scan footprint"]
         for mark in marks:
             mark.set_path_effects(_halo(3.2))

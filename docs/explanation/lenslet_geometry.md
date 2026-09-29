@@ -208,6 +208,45 @@ ax.set_title(f"log stretch, {np.log10(norm.vmax / norm.vmin):.0f} decades")
 plt.show()
 ```
 
+A figure that introduces the detector one idea at a time draws the same view
+with fewer parts. `show` names the parts to draw over the image; a part left
+out is still created, hidden and under its label, so every step of the
+sequence holds the same artists. The parts of
+{func}`~coronachrome.viz.plot_traces` are `traces`, `centroids`,
+`wavelength_labels`, `detector_edge`, `reference_marks`, `reference_labels`,
+`scan_marker`, `scan_box` and `readout`; those of
+{func}`~coronachrome.viz.plot_lenslet_cells` are `cells`, `lenslets`,
+`lenslet_labels`, `reference_marks` and `reference_labels`.
+
+```{code-cell} ipython3
+steps = {
+    "the traces": ("traces",),
+    "+ centroids": ("traces", "centroids", "wavelength_labels"),
+    "+ one PSFlet": (
+        "traces",
+        "centroids",
+        "wavelength_labels",
+        "scan_marker",
+        "scan_box",
+    ),
+}
+fig, axes = plt.subplots(3, 1, figsize=(7.0, 7.5), layout="constrained")
+for ax, (title, show) in zip(axes, steps.items()):
+    viz.plot_traces(
+        ir,
+        disperser,
+        lam,
+        channels=(a, b),
+        scan_index=4,
+        styles=styles,
+        show=show,
+        colorbar=False,
+        ax=ax,
+    )
+    ax.set_title(title, loc="left")
+plt.show()
+```
+
 ## Clipping at the detector edge
 
 A trace near the edge of the detector loses footprint pixels. The dashed line
