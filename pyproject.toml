@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
-dependencies = ["jax", "equinox", "lineax", "optixstuff>=1.6.0"]
+dependencies = ["jax", "equinox", "lineax", "numpy", "optixstuff>=1.6.0"]
 
 [project.optional-dependencies]
 dev = ["pre-commit"]
@@ -32,11 +32,22 @@ docs = [
 ]
 # The viz tests import matplotlib and eyepiece, so the test extra has to carry
 # the viz extra: without it those tests fail to import on a clean runner.
-test = ["pytest", "coronachrome[viz]"]
+test = [
+    "pytest",
+    "hypothesis",
+    "pytest-cov",
+    "pytest-xdist",
+    "pytest-testmon",
+    "pytest-markdown-docs",
+    "pytest-timeout",
+    "pytest-fail-slow",
+    "hwoutils",
+    "coronachrome[viz]",
+]
 # eyepiece>=0.4.0 carries PlotResult, imshow_log, imshow_diverging,
 # SourceStyles and record; hwostyle>=1.4.0 carries the semantic cmaps
 # (readouts) that coronachrome.viz reads directly.
-viz = ["eyepiece>=0.4.0", "hwostyle>=1.4.0"]
+viz = ["eyepiece>=0.4.0", "hwostyle>=1.4.0", "matplotlib"]
 
 [project.urls]
 Homepage = "https://github.com/CoreySpohn/coronachrome"
@@ -62,3 +73,26 @@ select = ["B", "D", "E", "F", "I", "UP", "RUF"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[tool.pytest.ini_options]
+markers = [
+    "medium: tests with a 30-second default time budget",
+    "slow: tests with a 300-second default time budget, run nightly",
+]
+
+[tool.testbudget]
+library = "coronachrome"
+mode = "report"
+unit_s = 5
+medium_s = 30
+slow_s = 300
+
+[tool.deptry]
+known_first_party = ["coronachrome"]
+optional_dependencies_dev_groups = ["dev", "docs", "test"]
+
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.src]
+include = ["src/coronachrome"]
