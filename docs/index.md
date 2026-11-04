@@ -103,5 +103,5 @@ explanation/crispy_heritage
 :caption: API Reference
 :hidden:
 
-autoapi/coronachrome/index
+autoapi/index
 ```
