@@ -75,6 +75,11 @@ select = ["B", "D", "E", "F", "I", "UP", "RUF"]
 convention = "google"
 
 [tool.pytest.ini_options]
+filterwarnings = [
+    "error",
+    # tol_colors builds colormaps with set_bad, pending deprecation in Matplotlib 3.11.
+    'ignore:The set_bad function will be deprecated in a future version\.:PendingDeprecationWarning:tol_colors',
+]
 markers = [
     "medium: tests with a 30-second default time budget",
     "slow: tests with a 300-second default time budget, run nightly",
