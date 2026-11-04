@@ -40,7 +40,9 @@ would smuggle a reference wavelength into a relation that has none. When the
 cube comes from an optical path, the plate scale to pass is exactly the
 detector's:
 
-```python
+Requires a configured optical path and its focal-plane cube.
+
+```python notest
 disperser = LensletDisperser(..., sky_pitch_arcsec=0.014)
 ir = build_ir(
     disperser,
@@ -143,7 +145,9 @@ The intended usage pattern renders the scene on an oversampled grid for a
 smooth underlying spectrum and rebins onto the Nyquist channels that drive the
 forward model:
 
-```python
+Requires a configured scene renderer and wavelength range.
+
+```python notest
 centers_hi, edges_hi = spectral_grid(R, lam1, lam2, oversample=6)
 cube_hi = render(scene, centers_hi, jnp.diff(edges_hi))  # bin-integrated rates
 edges = edges_hi[::6]

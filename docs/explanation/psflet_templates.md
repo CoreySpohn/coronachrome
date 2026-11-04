@@ -71,7 +71,9 @@ reaches {func}`~coronachrome.build_ir` either as an explicit argument or as a
 file reference on the descriptor (`LensletDisperser.psflet_pack_path`), so a
 pure-config hardware description stays possible:
 
-```python
+Requires user-supplied wavelengths, focal-plane shape, and disperser settings.
+
+```python notest
 from coronachrome import analytic_psflet_pack, build_ir, save_psflet_pack
 
 pack = analytic_psflet_pack("gaussian", jnp.array([0.7]), lam, psflet_ref_nm=660.0)

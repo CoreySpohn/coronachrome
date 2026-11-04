@@ -88,7 +88,9 @@ the conditional one when no nuisance basis is given.
 case of one free amplitude per wavelength, and a nuisance basis is a plain
 `vmap` of {func}`~coronachrome.spatial_sample` over a stack of mode cubes.
 
-```python
+Requires user-supplied planet templates, speckle modes, and detector configuration.
+
+```python notest
 import jax
 import jax.numpy as jnp
 
