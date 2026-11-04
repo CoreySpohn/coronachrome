@@ -1,5 +1,5 @@
 [build-system]
-requires = ['hatchling', "hatch-fancy-pypi-readme", "hatch-vcs"]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -16,38 +16,40 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Astronomy",
 ]
-dependencies = ["jax", "equinox", "lineax", "numpy", "optixstuff>=1.6.0"]
+dependencies = ["jax>=0.8.1", "equinox>=0.13.2", "lineax>=0.1.0", "numpy>=2.0", "optixstuff>=1.6.0"]
 
 [project.optional-dependencies]
-dev = ["pre-commit"]
+dev = ["pre-commit>=3.6"]
 # The docs pages execute and draw through coronachrome.viz, so the docs extra
 # carries the viz extra.
 docs = [
-    "sphinx",
-    "myst-nb",
-    "sphinx-book-theme",
-    "sphinx-autoapi",
-    "ipykernel",
-    "coronachrome[viz]",
+    "sphinx>=7.2",
+    "myst-nb>=1.0",
+    "sphinx-book-theme>=1.1",
+    "sphinx-autoapi>=3.0",
+    "ipykernel>=6.29",
+    "coronachrome[viz]>=1.1.0",
 ]
 # The viz tests import matplotlib and eyepiece, so the test extra has to carry
 # the viz extra: without it those tests fail to import on a clean runner.
 test = [
-    "pytest",
-    "hypothesis",
-    "pytest-cov",
-    "pytest-xdist",
-    "pytest-testmon",
-    "pytest-markdown-docs",
-    "pytest-timeout",
-    "pytest-fail-slow",
-    "hwoutils",
-    "coronachrome[viz]",
+    "pytest>=7.3.2",
+    "hypothesis>=6.79.1",
+    # The budget plugin uses psutil for portable process memory readings.
+    "psutil>=5.9.4",
+    "pytest-cov>=1.0",
+    "pytest-xdist>=2.5",
+    "pytest-testmon>=2.0.7",
+    "pytest-markdown-docs>=0.1.0",
+    "pytest-timeout>=1.3.1",
+    "pytest-fail-slow>=0.1.0",
+    "hwoutils>=1.10.0",
+    "coronachrome[viz]>=1.1.0",
 ]
 # eyepiece>=0.4.0 carries PlotResult, imshow_log, imshow_diverging,
 # SourceStyles and record; hwostyle>=1.4.0 carries the semantic cmaps
 # (readouts) that coronachrome.viz reads directly.
-viz = ["eyepiece>=0.4.0", "hwostyle>=1.4.0", "matplotlib"]
+viz = ["eyepiece>=0.4.0", "hwostyle>=1.4.0", "matplotlib>=3.11"]
 
 [project.urls]
 Homepage = "https://github.com/CoreySpohn/coronachrome"
