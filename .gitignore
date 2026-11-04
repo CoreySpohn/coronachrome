@@ -208,9 +208,11 @@ marimo/_lsp/
 __marimo__/
 
 # Project-specific
-scripts/
+/scripts/
 output/
 input/
 debug.log
 _version.py
 .DS_Store
+.claude/
+.jax_cache/
