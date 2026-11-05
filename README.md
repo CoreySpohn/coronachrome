@@ -1,5 +1,12 @@
 # coronachrome
 
+<p align="center">
+  <a href="https://pypi.org/project/coronachrome/"><img src="https://img.shields.io/pypi/v/coronachrome.svg?style=flat-square&logo=pypi" alt="PyPI"/></a>
+  <a href="https://github.com/CoreySpohn/coronachrome/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/CoreySpohn/coronachrome/ci.yml?branch=main&style=flat-square&logo=github&label=tests" alt="Tests"/></a>
+  <a href="https://github.com/CoreySpohn/coronachrome/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License"/></a>
+  <a href="https://github.com/CoreySpohn/coronachrome/blob/main/pyproject.toml"><img src="https://img.shields.io/badge/python-3.12%2B-blue.svg?style=flat-square&logo=python" alt="Python 3.12+"/></a>
+</p>
+
 **coronachrome** is a JAX lenslet integral-field-spectrograph (IFS) forward
 model and spectral extractor for high-contrast imaging, built for the
 Habitable Worlds Observatory (HWO) simulation suite.
