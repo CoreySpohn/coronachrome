@@ -1,163 +1,82 @@
----
-jupytext:
-  text_representation:
-    extension: .md
-    format_name: myst
-kernelspec:
-  display_name: Python 3
-  language: python
-  name: python3
----
-
 # Sampling contracts
 
-Two quantities in an IFS simulation look like free parameters but are not: how
-many focal-plane cube pixels feed one lenslet, and how many spectral channels
-sample the band. Choosing either by hand invites silent inconsistency between
-the hardware description and the simulation grid, so coronachrome derives both
-from first principles and validates them at build time. This page states the
-two contracts and the API that implements them.
+Inputs are `hwoutils.grids.Image` cubes with data `(band, y, x)`, leading axes
+`("wavelength",)`, an arcsec `PixelGrid`, a spatial `measure`, a `quantity`, and
+an explicit reconstruction. Pixel `(j, i)` is centred at `(x, y)=(i, j)`.
+Generated grids use geometric centres `(n-1)/2`.
 
-## Spatial sampling is derived, not chosen
+## Spatial sampling
 
-The lenslet pitch on sky is an instrument property, and the focal-plane cube's
-plate scale is a simulation property. Their ratio, the number of cube pixels
-per lenslet cell, is therefore a derived quantity:
+`build_ir(disperser, bands, fp_grid, *, layout=None, half=3,
+psflet_pack=None, quadrature_order=5)` stores physical geometry. No independent
+sampling floats are accepted. The sky pitch comes from the disperser; the
+focal-plane spacing comes from the grid. For isotropic axis-aligned grids,
+`ir.fp_pixel_scale_arcsec = fp_grid.step` and `ir.fp_px_per_lenslet` is the
+lenslet pitch divided by that spacing. Scalar scale inspection raises for
+anisotropic or rotated source bases; rendering supports their full bases.
 
-$$
-\texttt{fp\_px\_per\_lenslet}
-  = \frac{\texttt{sky\_pitch\_arcsec}}{\texttt{fp\_pixel\_scale\_arcsec}}.
-$$
+`build_ir` clips each square lenslet cell against focal pixels by convex-polygon
+clipping on the host. `ir.collection_overlap` stores the resulting sparse COO
+matrix (cells by focal pixels) as static host tuples of indices and areas in
+arcsec squared. `spatial_sample(image, ir)` applies it with JAX: one sparse
+product per wavelength, batched across bands. No geometry is rebuilt during
+rendering, and no dense cell-by-focal-pixel matrix is allocated.
 
-The descriptor carries the pitch (`LensletDisperser.sky_pitch_arcsec`, the
-lenslet pitch projected on sky) and the build call supplies the cube's
-angular plate scale ({func}`~coronachrome.build_ir` keyword
-`fp_pixel_scale_arcsec`). Both are plain angles in arcseconds. The unit
-choice is deliberate: upstream simulators render every wavelength onto one
-fixed angular grid (the imaging detector's), so the cube's plate scale is a
-wavelength-independent angle, and quoting either quantity in $\lambda / D$
-would smuggle a reference wavelength into a relation that has none. When the
-cube comes from an optical path, the plate scale to pass is exactly the
-detector's:
+Per-pixel values are divided by focal pixel area to obtain density;
+per-unit-area values are already densities. The overlap integral is exact up
+to floating-point roundoff for a piecewise-constant image (nearest
+reconstruction), including rotated square cells and clipped field edges.
+There is no edge renormalization; the density is zero outside the focal grid.
+Square cells that tile a field conserve its total flux to roundoff.
 
-Requires a configured optical path and its focal-plane cube.
+For `linear`, `cubic`, and `band_limited` declarations, collection approximates
+the declared continuous reconstruction by constant density in each pixel.
+It does not integrate those interpolants exactly. This local approximation
+keeps collection sparse, including for rotated cells; Fourier reconstruction
+would in general couple every cell to every focal pixel. Refine the focal
+sampling to assess the error for the actual scene. The band-limited error
+measurement below is a smooth-scene example, not a universal bound near Nyquist.
 
-```python notest
-disperser = LensletDisperser(..., sky_pitch_arcsec=0.014)
-ir = build_ir(
-    disperser,
-    lam,
-    fp_shape=cube.shape[1:],
-    fp_pixel_scale_arcsec=path.detector.pixel_scale_arcsec,
-)
-```
+`test_band_limited_cell_integral_error` integrates the zero-padded Fourier
+interpolant of a Gaussian with sigma 0.2 arcsec analytically, using sinc factors
+for each rotated square aperture (side 0.2 arcsec, angle arcsin(1/sqrt(5))).
+On a 3.2 arcsec field with pad factor 2, maximum relative cell errors are
+1.579101%, 0.346238%, and 0.094159% at spacings 0.1, 0.05, and 0.025 arcsec.
+The measured convergence orders are 2.19 and 1.88. The finest grid achieves
+about 0.1% error while retaining sparse local collection; this motivates the
+approximation, but sharp or poorly sampled scenes require their own check.
 
-An explicit `fp_px_per_lenslet` override remains available for parity work
-against reference implementations that fix the ratio directly. Exactly one of
-the two inputs must be given: passing both is an error, and passing neither is
-an error rather than a silent default.
+For density inputs, `forward_spmv` and `forward_streaming` require an explicit
+`output_quantity` for the integrated unit, for example `"Jy"` when the input
+quantity is `"Jy/arcsec2"`. Per-pixel input quantities are preserved.
+Builds warn when cells extend beyond the source.
 
-`build_ir` also runs two diagnostics at build time, when a mistake is cheap to
-see:
+A lambda/D grid must first call `grid.to_arcsec(wavelength_nm)` through its
+`Frame`, which declares reference wavelength, diameter and diameter convention.
+Each cube has one fixed angular grid and retains its `SkyOrientation`.
 
-- **Nyquist**: if the cube provides fewer than two pixels per lenslet cell,
-  the flux-conserving cell integral degrades (the cube cannot resolve the
-  cells it is being integrated over), and the build warns. Use a finer cube
-  grid.
-- **Coverage**: any lenslet cell that extends past the cube bounds receives
-  zero weight there, so that spaxel silently loses flux. The build counts the
-  affected lenslets and warns.
+## Spectral channels
 
-The figure shows both quantities on one plane. Each outline is a lenslet
-collection cell, the square that {func}`~coronachrome.build_ir` integrates the
-cube over, drawn by {func}`coronachrome.viz.plot_lenslet_cells` (the `viz`
-extra) over the cube's own pixels. A 0.0175 arcsec pitch on a 0.005 arcsec
-cube grid gives 3.5 cube pixels per cell, above the Nyquist floor of two. The
-cube is too small for this grid, though: the corner cells hang past its edge,
-and the build's coverage warning counts them.
+`channel_edges(n, lo_nm, hi_nm)` returns a tuple of `Band` intervals with exactly
+shared log-spaced edges, including both outer endpoints. The historical name
+now represents edges as intervals. `channel_centers(bands)` returns their
+geometric-mean reference wavelengths in nm. This preserves its wavelength
+meaning; `Band.center_nm` remains the shared type's arithmetic centre.
 
-```{code-cell} ipython3
-import hwostyle
-import jax.numpy as jnp
-import matplotlib.pyplot as plt
-import numpy as np
-from optixstuff.disperser import LensletDisperser
+`spectral_grid(R, lo_nm, hi_nm, oversample=1)` returns Bands, with
+`n = ceil(R*log(hi_nm/lo_nm))`. Oversampling subdivides each base Band, preserving
+its edges exactly. `rebin_channels(values, src_bands, dst_bands, axis=0)` apportions
+bin integrals by overlap. For an Image it preserves spatial metadata. Full
+coverage conserves the integral to the floating-point floor; partial coverage
+loses the uncovered fraction. A source bin is assumed to have constant density.
 
-from coronachrome import build_ir
-from coronachrome import viz
+Every bin response is integrated by a `Quadrature` built from the Bands, split
+at tabulated throughput and template wavelengths. Nodes evaluate throughput,
+dispersion, chromatic PSFlet shape and wavecal before the bin integral. The
+operator assumes constant spectral density inside each input band. Increase
+quadrature_order or refine Bands to study numerical convergence.
 
-hwostyle.use("dark")
-
-disperser = LensletDisperser(
-    pitch_m=174e-6,
-    pixsize_m=13e-6,
-    angle_rad=float(np.arctan(0.5)),
-    lam_ref_nm=660.0,
-    pix_per_reselt=2.0,
-    dispersion_coeffs=jnp.array([140.0, 0.0]),
-    psflet_params=jnp.array([0.9]),
-    psflet_ref_nm=660.0,
-    grid_kind="square",
-    n_lenslets=7,
-    psflet_kind="gaussian",
-    detector_shape=(128, 128),
-    sky_pitch_arcsec=0.0175,
-)
-fp_shape = (32, 32)
-lam = jnp.array([650.0, 660.0, 670.0])
-ir = build_ir(disperser, lam, fp_shape, fp_pixel_scale_arcsec=0.005)
-
-yy, xx = np.mgrid[: fp_shape[0], : fp_shape[1]]
-scene = np.exp(-((xx - 21.0) ** 2 + (yy - 12.0) ** 2) / (2 * 1.2**2)) + 1e-3
-viz.plot_lenslet_cells(
-    disperser,
-    fp_shape,
-    fp_pixel_scale_arcsec=0.005,
-    image=scene,
-    window=(-6.0, 37.0, -6.0, 37.0),
-)
-plt.show()
-```
-
-## Spectral channels follow the Nyquist rule
-
-A spectrograph with resolving power $R = \lambda / \Delta\lambda$ has
-resolution elements of constant width $1 / R$ in log wavelength, so a band
-from $\lambda_1$ to $\lambda_2$ holds
-
-$$
-n_\mathrm{chan} = \left\lceil R \ln(\lambda_2 / \lambda_1) \right\rceil
-$$
-
-of them, one channel per resolution element. This is a correctness contract,
-not a convenience. Oversampling the spectrum makes neighbouring columns of the
-dispersion operator $H$ near-duplicate, the extraction normal equations turn
-near-singular, and the float32 solve breaks down (see the precision discussion
-in [the model page](model)). Undersampling wastes resolution the instrument
-paid for.
-
-{func}`~coronachrome.n_nyquist_channels` implements the rule,
-{func}`~coronachrome.channel_edges` and {func}`~coronachrome.channel_centers`
-build the log-spaced grid (constant edge ratio, so $R$ is constant per
-channel), and {func}`~coronachrome.spectral_grid` combines them.
-
-The intended usage pattern renders the scene on an oversampled grid for a
-smooth underlying spectrum and rebins onto the Nyquist channels that drive the
-forward model:
-
-Requires a configured scene renderer and wavelength range.
-
-```python notest
-centers_hi, edges_hi = spectral_grid(R, lam1, lam2, oversample=6)
-cube_hi = render(scene, centers_hi, jnp.diff(edges_hi))  # bin-integrated rates
-edges = edges_hi[::6]
-cube = rebin_channels(cube_hi, edges_hi, edges, axis=0)
-lam = channel_centers(edges)
-```
-
-{func}`~coronachrome.rebin_channels` is flux-conserving for bin-integrated
-values (each destination bin takes the overlap fraction of every source bin),
-and on an exactly nested grid like the one above it reduces to a plain sum of
-sub-channels. Passing the same `edges` to `build_ir(wavelength_edges=edges)`
-gives the line-spread-function smear the exact extent of each bin instead of
-an approximation from the center spacing.
+Hex layouts retain square collection cells at staggered centres, integrated by
+the same sparse overlap matrix. The square cells overlap; this is not a physical
+hexagonal-aperture model. Extracted hex Images pack the same centres onto an
+axial grid with unused pixels zero. Packing does not redefine collection area.

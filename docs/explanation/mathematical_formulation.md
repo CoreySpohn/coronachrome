@@ -17,8 +17,13 @@ $u_\ell$, collects the light over its aperture. Its flux at wavelength $\lambda$
 
 $$ z_\ell(\lambda) = \int a_\ell(u)\, f(u, \lambda)\, du, $$
 
-where $a_\ell$ is the lenslet aperture (in coronachrome, a bilinear footprint at the
-lenslet center).
+where $a_\ell$ is the square lenslet aperture. For focal-pixel flux $f_p$,
+the discretized map is $S_{\ell p} = |C_\ell \cap P_p| / |P_p|$.
+The overlap areas are computed by convex-polygon clipping at build time.
+This exactly integrates the piecewise-constant reconstruction; for density
+inputs the denominator is omitted. Smooth reconstructions (including
+band-limited images) use this piecewise-constant approximation; see the
+[sampling contracts](sampling_contracts) for a measured error and its scope.
 
 **Stage 2: dispersion and placement.** The disperser spreads lenslet $\ell$ at
 wavelength $\lambda$ to a centroid $c_\ell(\lambda)$ on the detector and stamps a
@@ -33,16 +38,17 @@ Both stages are linear in the input. Doubling $f$ doubles $d$, and contributions
 
 Bin the wavelength axis into $n_\lambda$ bins $\lambda_w$ and the detector into
 $n_\mathrm{det}$ pixels $x_i$. The per-lenslet spectrum becomes a finite array
-$z_{\ell w} = z_\ell(\lambda_w)$, and the detector becomes a vector $y_i = d(x_i)$.
+$z_{\ell w} = \int_{B_w} z_\ell(\lambda) d\lambda$, and the detector becomes a vector $y_i = d(x_i)$.
 
 A **channel** is one (lenslet, wavelength) pair $(\ell, w)$. There are
 $n_\mathrm{ch} = n_\mathrm{lenslets}\cdot n_\lambda$ of them. Stage 2 becomes a finite
 sum,
 
 $$ y_i = \sum_{(\ell, w)} H_{i,\,(\ell w)}\, z_{\ell w}, \qquad
-   H_{i,\,(\ell w)} = \phi\!\left(x_i - c_\ell(\lambda_w);\, \lambda_w\right), $$
+   H_{i,\,(\ell w)} = \frac{1}{|B_w|}\int_{B_w} T(\lambda)\phi\!\left(x_i - c_\ell(\lambda);\, \lambda\right)d\lambda, $$
 
-that is, $H_{i,c}$ is the value of channel $c$'s PSFlet at detector pixel $i$.
+The band-average response uses a Quadrature built from the channel Bands,
+assuming constant source density within a band.
 Flattening the channels into a vector $z$ and the pixels into $y$,
 
 $$ \boxed{\,y = H z\,}, \qquad H \in \mathbb{R}^{n_\mathrm{det}\times n_\mathrm{ch}}. $$
@@ -133,4 +139,4 @@ fast, differentiable first estimate.
 | $D^{-1}H^\top W y$ | {func}`~coronachrome.matched_filter` |
 | $(H^\top W H)^{-1}$ block | {func}`~coronachrome.spectrum_covariance` |
 | $\sqrt{\mathrm{diag}}$ of the block | {func}`~coronachrome.spectrum_errorbars` |
-| $W = 1/N$ | `1 / optixstuff` {meth}`detector.noise_variance <optixstuff.AbstractDetector.noise_variance>` |
+| $W = 1/N$ | `extraction_weights(renderer, detector, electron_rates, plan)` |

@@ -1,38 +1,82 @@
-"""Spatial Channel IR: the geometry-agnostic forward-operator description.
-
-Two factored steps, both stored as sparse footprint arrays so the operator
-stays affordable at HWO scale:
-
-- spatial sampling: per-channel focal-plane footprint (wavelength-independent).
-- dispersion: per channel-wavelength PSFlet footprint on the detector.
-"""
+"""Grid geometry and sparse dispersion footprints of the IFS operator."""
 
 import equinox as eqx
 import jax.numpy as jnp
+from hwoutils.grids import PixelGrid
+from hwoutils.spectral import Band
 from jax import Array
+
+from coronachrome._collection import CellOverlap
+from coronachrome.grids import LensletLayout
 
 
 class SpatialChannelIR(eqx.Module):
-    """Standardized arrays specifying the IFS forward operator H."""
+    """Band-integrated dispersion operator with static sampling geometry."""
 
-    spatial_src: Array = eqx.field(converter=jnp.asarray)
-    spatial_w: Array = eqx.field(converter=jnp.asarray)
     det_rows: Array = eqx.field(converter=jnp.asarray)
     det_vals: Array = eqx.field(converter=jnp.asarray)
-    n_channels: int = eqx.field(static=True)
-    n_wav: int = eqx.field(static=True)
-    fp_shape: tuple[int, int] = eqx.field(static=True)
-    det_shape: tuple[int, int] = eqx.field(static=True)
+    lenslet_indices: Array = eqx.field(converter=jnp.asarray)
+    bands: tuple[Band, ...] = eqx.field(static=True)
+    fp_grid: PixelGrid = eqx.field(static=True)
+    lenslet_grid: PixelGrid = eqx.field(static=True)
+    detector_grid: PixelGrid = eqx.field(static=True)
+    layout: LensletLayout = eqx.field(static=True)
+    collection_grids: tuple[PixelGrid, ...] = eqx.field(static=True)
+
+    collection_overlap: CellOverlap = eqx.field(static=True)
+
+    @property
+    def n_channels(self):
+        """Number of spatial lenslet channels (distinct from spectral bands)."""
+        return self.layout.n_lenslets**2
+
+    @property
+    def n_wav(self):
+        """Number of spectral bands."""
+        return len(self.bands)
+
+    @property
+    def fp_shape(self):
+        """Focal-plane array shape (ny,nx)."""
+        return self.fp_grid.shape
+
+    @property
+    def det_shape(self):
+        """Detector array shape (ny,nx)."""
+        return self.detector_grid.shape
+
+    @property
+    def fp_pixel_scale_arcsec(self):
+        """Isotropic axis-aligned focal-plane spacing [arcsec/pixel]."""
+        return self.fp_grid.step
+
+    @property
+    def fp_px_per_lenslet(self):
+        """Lenslet x-pitch divided by isotropic focal-plane spacing."""
+        (a, _), (c, _) = self.lenslet_grid.basis
+        return (a * a + c * c) ** 0.5 / self.fp_pixel_scale_arcsec
 
     def __check_init__(self):
-        """Validate that footprint arrays are consistent."""
-        if self.spatial_src.shape != self.spatial_w.shape:
-            raise ValueError("spatial_src and spatial_w must have the same shape")
-        if self.det_rows.shape != self.det_vals.shape:
-            raise ValueError("det_rows and det_vals must have the same shape")
-        if self.det_rows.shape[0] != self.n_channels:
-            raise ValueError("det_rows leading dim must equal n_channels")
-        if self.det_rows.shape[1] != self.n_wav:
-            raise ValueError("det_rows second dim must equal n_wav")
-        if self.spatial_src.shape[0] != self.n_channels:
-            raise ValueError("spatial_src leading dim must equal n_channels")
+        """Reject inconsistent footprints and image geometry."""
+        if not self.bands or not all(isinstance(b, Band) for b in self.bands):
+            raise ValueError("bands must be a nonempty sequence of Band")
+        if self.det_rows.shape != self.det_vals.shape or self.det_rows.ndim != 3:
+            raise ValueError(
+                "det_rows and det_vals must share shape (n_channels,n_wav,n_psf)"
+            )
+        if self.det_rows.shape[:2] != (self.n_channels, self.n_wav):
+            raise ValueError("footprints must match n_channels and n_wav")
+        if self.lenslet_indices.shape != (self.n_channels,):
+            raise ValueError("lenslet_indices must match n_channels")
+        if self.fp_grid.unit != "arcsec" or self.lenslet_grid.unit != "arcsec":
+            raise ValueError("focal-plane and lenslet grids must use arcsec")
+        expected = 1 if self.layout.grid_kind == "square" else self.layout.n_lenslets
+        if len(self.collection_grids) != expected:
+            raise ValueError("collection_grids must cover the layout rows")
+        if self.collection_overlap.shape != (
+            self.n_channels,
+            self.fp_shape[0] * self.fp_shape[1],
+        ):
+            raise ValueError("collection_overlap must map focal pixels to channels")
+        if self.detector_grid.unit != "meter":
+            raise ValueError("detector_grid must use meter")

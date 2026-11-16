@@ -12,14 +12,14 @@ def test_centroids_equal_crispy_formula():
     coeffs, lam_ref = jnp.array([100.0, 0.0]), 660.0
     lam = jnp.array([650.0, 660.0, 670.0])
     det_shape = (256, 256)
-    pos = square_grid(n)
+    pos = square_grid(n, lenslet_origin="central_index")
     disp = dispersion_px(coeffs, lam_ref, lam)
     xc, yc = lenslet_centroids(pos, scale, angle, disp, det_shape)
 
     cos_a, sin_a = jnp.cos(angle), jnp.sin(angle)
     ii, jj = pos[:, 0], pos[:, 1]
-    ex = 128.0 + disp[None, :] + (scale * (cos_a * ii - sin_a * jj))[:, None]
-    ey_col = (128.0 + scale * (sin_a * ii + cos_a * jj))[:, None]
+    ex = 127.5 + disp[None, :] + (scale * (cos_a * ii - sin_a * jj))[:, None]
+    ey_col = (127.5 + scale * (sin_a * ii + cos_a * jj))[:, None]
     ey = ey_col * jnp.ones_like(disp)[None, :]
     assert jnp.allclose(xc, ex)
     assert jnp.allclose(yc, ey)

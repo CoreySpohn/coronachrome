@@ -5,7 +5,7 @@ z, shape (n_channels, n_wav)). Linear tier: a matched filter, a noise-weighted
 least-squares solve (a lineax conjugate-gradient solve on the normal
 equations, matrix-free, with stable gradients), and the
 GLS covariance of that solve for per-wavelength error bars. The regularized
-positivity + total-variation extractor is a later addition (Plan 3).
+positivity + total-variation extractor is a possible extension.
 
 The module also carries the parametric face of the same operator: when the
 scene is described by a few basis functions (a planet template with one free
@@ -18,22 +18,72 @@ matrix of those basis functions, with the nuisance block marginalized. See
 import jax
 import jax.numpy as jnp
 import lineax as lx
+from hwoutils.grids import Image
 from jax import eval_shape
 
 from coronachrome.render import spatial_sample
 
 
+def detector_statistics(renderer, detector, electron_rates, plan):
+    """Detector count mean/variance Images using the shared FramePlan contract.
+
+    electron_rates fields are (band,y,x) detected electrons/s. Sum source
+    bands before the detector call: a dispersed detector pays noise once per
+    physical pixel. Yield belongs upstream in detector.electrons.
+    """
+    from dataclasses import fields
+
+    from optixstuff.rates import ElectronRates
+
+    shape = electron_rates.total().shape
+    if len(shape) != 3 or shape[1:] != renderer.ir.det_shape:
+        raise ValueError("electron_rates must have shape (band,detector_y,detector_x)")
+    if detector.shape != renderer.ir.det_shape:
+        raise ValueError("detector shape must match the IR")
+    collapsed = ElectronRates(
+        **{
+            f.name: jnp.broadcast_to(getattr(electron_rates, f.name), shape).sum(
+                axis=0, keepdims=True
+            )
+            for f in fields(electron_rates)
+        }
+    )
+    mean, variance = detector.mean_and_variance(collapsed, plan)
+    return renderer.detector_image(mean[0], "e"), renderer.detector_image(
+        variance[0], "e^2"
+    )
+
+
+def extraction_weights(renderer, detector, electron_rates, plan):
+    """Inverse count-variance Image from detector.mean_and_variance.
+
+    Pixels with zero variance have zero weight, avoiding infinite weights in
+    noiseless/dark-free regions. An ideal noiseless fit can use uniform weights.
+    """
+    _, variance = detector_statistics(renderer, detector, electron_rates, plan)
+    safe = jnp.where(variance.data > 0, variance.data, 1.0)
+    return renderer.detector_image(jnp.where(variance.data > 0, 1 / safe, 0.0), "1/e^2")
+
+
+def _weight_data(renderer, weights):
+    return renderer._detector_data(weights) if isinstance(weights, Image) else weights
+
+
 def matched_filter(renderer, detector):
-    """Matched-filter spectra estimate, shape (n_channels, n_wav).
+    """Matched-filter lenslet Image, shape (n_wav, y, x).
 
     Returns ``(H^T y)`` normalized by the per-(channel, wavelength) column
     sum-of-squares, which for this operator equals
     ``(ir.det_vals ** 2).sum(axis=2)``. Fast and differentiable, but biased
     by cross-talk between overlapping traces.
     """
-    num = renderer.adjoint(detector)  # (n_channels, n_wav) = (H^T y) reshaped
+    num = renderer.channel_spectra(
+        renderer.adjoint(detector)
+    )  # (n_channels, n_wav) = (H^T y) reshaped
     colnorm2 = (renderer.ir.det_vals**2).sum(axis=2)  # (n_channels, n_wav)
-    return num / jnp.clip(colnorm2, 1e-12, None)
+    return renderer.channel_cube(
+        num / jnp.clip(colnorm2, 1e-12, None), detector.quantity
+    )
 
 
 def _equilibration(renderer, weights):
@@ -51,7 +101,7 @@ def _equilibration(renderer, weights):
     if weights is None:
         w = jnp.ones(n_det, dtype=renderer.H_mono.data.dtype)
     else:
-        w = jnp.asarray(weights).reshape(-1)
+        w = jnp.asarray(_weight_data(renderer, weights)).reshape(-1)
     # diag(H^T W H)_(ch,wav) = sum_k det_vals[ch,wav,k]^2 * w[det_rows[ch,wav,k]]
     wdiag = (ir.det_vals**2 * w[ir.det_rows]).sum(axis=2).reshape(-1)  # (ncw,)
     d = 1.0 / jnp.sqrt(jnp.clip(wdiag, 1e-30, None))
@@ -67,7 +117,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     coordinates (so ``damping`` is relative to the unit-diagonal normal
     operator). ``weights`` is a per-detector-pixel weight (default uniform);
     pass ``1 / N`` (N the per-pixel noise variance) for noise-weighted
-    extraction. Returns z_hat of shape (n_channels, n_wav). Differentiable
+    extraction. Returns a per_pixel lenslet Image of shape (n_wav, y, x). Differentiable
     through the solve with numerically stable gradients.
 
     Precision and conditioning: the forward model and this solve run in the
@@ -83,7 +133,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
 
     Args:
         renderer: An ``IFSRenderer`` holding the dispersion operator.
-        detector: The dispersed detector image.
+        detector: The per_pixel detector Image.
         weights: Per-detector-pixel weight (inverse noise variance), default
             uniform.
         damping: Tikhonov regularization on the equilibrated spectra, relative
@@ -94,12 +144,12 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
         atol: CG absolute tolerance.
 
     Returns:
-        Extracted spectra of shape ``(n_channels, n_wav)``.
+        Extracted Image on the lenslet sky grid, retaining detector.quantity.
     """
     ir = renderer.ir
     ncw = ir.n_channels * ir.n_wav
     h_mono = renderer.H_mono
-    y = detector.reshape(-1)
+    y = renderer._detector_data(detector).reshape(-1)
     w, d = _equilibration(renderer, weights)
     sw = jnp.sqrt(w)
     z_struct = eval_shape(lambda: jnp.zeros(ncw, dtype=y.dtype))
@@ -119,7 +169,9 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
         rhs = sw * y
     solver = lx.Normal(lx.CG(rtol=rtol, atol=atol))
     sol = lx.linear_solve(operator, rhs, solver=solver)
-    return (d * sol.value).reshape(ir.n_channels, ir.n_wav)
+    return renderer.channel_cube(
+        (d * sol.value).reshape(ir.n_channels, ir.n_wav), detector.quantity
+    )
 
 
 def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1e-6):
@@ -149,8 +201,11 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
         renderer: An ``IFSRenderer``.
         weights: Per-detector-pixel inverse noise variance ``1/N`` (default
             uniform). For a true detector-noise covariance whose error bars
-            scale with wavelength, pass ``1 / detector.noise_variance(rate, t)``
-            evaluated on the noiseless dispersed rate map.
+            scale with wavelength, use :func:`extraction_weights`, based on
+            ``detector.mean_and_variance(electron_rates, plan)``
+            evaluated on ElectronRates of the total dispersed electrons/s and a
+            FramePlan. Collapse source bands before this call so detector noise
+            is paid once per physical detector pixel.
         channels: 1-D array of lenslet channel indices (the spaxels of interest).
         rtol: CG relative tolerance.
         atol: CG absolute tolerance.
@@ -209,7 +264,7 @@ def amplitude_basis(template, ir):
     spectrally scaled template.
 
     Args:
-        template: Focal-plane cube ``(n_wav, ny, nx)`` of the source's spatial
+        template: Focal-plane Image ``(n_wav, ny, nx)`` of the source's spatial
             distribution per wavelength, in the units the amplitudes are
             wanted in (normalize each plane to unit sum for amplitudes that
             mean "total rate at this wavelength").
@@ -261,7 +316,7 @@ def _basis_fisher(renderer, cols, weights):
     if weights is None:
         w = jnp.ones(n_det, dtype=h_mono.data.dtype)
     else:
-        w = jnp.asarray(weights).reshape(-1)
+        w = jnp.asarray(_weight_data(renderer, weights)).reshape(-1)
     flat = jnp.asarray(cols).reshape(cols.shape[0], -1)  # (n_basis, ncw)
 
     def normal_mv(v):

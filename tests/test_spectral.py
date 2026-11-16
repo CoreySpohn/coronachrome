@@ -1,8 +1,12 @@
 """Tests for the Nyquist spectral-grid helpers and flux-conserving rebin."""
 
+from itertools import pairwise
+
+import ineedvalidation as vv
 import jax
 import jax.numpy as jnp
 import pytest
+from hwoutils.spectral import Band, Quadrature
 
 from coronachrome.spectral import (
     channel_centers,
@@ -38,9 +42,12 @@ def test_n_nyquist_channels_validates_band():
 def test_channel_edges_constant_ratio():
     """Log-spaced edges keep a constant ratio, so R is constant per channel."""
     edges = channel_edges(29, 855.0, 1045.0)
-    assert edges.shape == (30,)
+    assert len(edges) == 29
+    assert edges[0].lo_nm == 855.0 and edges[-1].hi_nm == 1045.0
+    assert all(a.hi_nm == b.lo_nm for a, b in pairwise(edges))
+    edges = jnp.asarray([edges[0].lo_nm] + [b.hi_nm for b in edges])
     ratios = edges[1:] / edges[:-1]
-    assert jnp.allclose(ratios, ratios[0], rtol=1e-12)
+    assert jnp.allclose(ratios, ratios[0], rtol=2e-15, atol=0)
     assert jnp.allclose(edges[0], 855.0)
     assert jnp.allclose(edges[-1], 1045.0)
 
@@ -50,39 +57,48 @@ def test_channel_centers_are_geometric_means():
     edges = channel_edges(4, 500.0, 1000.0)
     centers = channel_centers(edges)
     assert centers.shape == (4,)
-    assert jnp.allclose(centers, jnp.sqrt(edges[:-1] * edges[1:]))
+    assert jnp.allclose(
+        centers, jnp.asarray([(b.lo_nm * b.hi_nm) ** 0.5 for b in edges])
+    )
 
 
 def test_spectral_grid_composes_count_and_edges():
     """spectral_grid combines the channel count and edge/center construction."""
-    centers, edges = spectral_grid(140.0, 855.0, 1045.0)
-    assert centers.shape == (29,)
-    assert edges.shape == (30,)
+    edges = spectral_grid(140.0, 855.0, 1045.0)
+    assert len(edges) == 29
+    assert edges[0].lo_nm == 855.0 and edges[-1].hi_nm == 1045.0
+    assert all(a.hi_nm == b.lo_nm for a, b in pairwise(edges))
+    edges = jnp.asarray([edges[0].lo_nm] + [b.hi_nm for b in edges])
 
 
 def test_spectral_grid_oversample_nests():
     """Every oversample-th hi-res edge coincides with a base channel edge."""
-    _, edges = spectral_grid(140.0, 855.0, 1045.0)
-    centers_hi, edges_hi = spectral_grid(140.0, 855.0, 1045.0, oversample=6)
-    assert centers_hi.shape == (29 * 6,)
-    assert jnp.allclose(edges_hi[::6], edges, rtol=1e-12)
+    edges = spectral_grid(140.0, 855.0, 1045.0)
+    edges_hi = spectral_grid(140.0, 855.0, 1045.0, oversample=6)
+    assert len(edges_hi) == 29 * 6
+    assert all(a.lo_nm == b.lo_nm for a, b in zip(edges_hi[::6], edges, strict=True))
+    assert edges_hi[-1].hi_nm == edges[-1].hi_nm
 
 
+@vv.case("ifs-extraction", "code-verification")
 def test_rebin_conserves_total_flux():
-    """Total integrated flux is preserved when the grids share a support."""
+    """Fails if overlap weights lose flux; float64 floor of 8 eps on exact tiling."""
     src_edges = channel_edges(24, 600.0, 700.0)
     dst_edges = channel_edges(8, 600.0, 700.0)
-    values = jax.random.uniform(jax.random.PRNGKey(0), (24,)) + 0.1
+    q = Quadrature.build(src_edges, None, 3)
+    values = q.integrate(q.nodes_nm**2)
+    exact = (700.0**3 - 600.0**3) / 3
+    assert jnp.allclose(values.sum(), exact, rtol=2e-15, atol=0)
     out = rebin_channels(values, src_edges, dst_edges)
     assert out.shape == (8,)
-    assert jnp.allclose(out.sum(), values.sum(), rtol=1e-12)
+    assert jnp.allclose(out.sum(), values.sum(), rtol=2e-15, atol=0)
 
 
 def test_rebin_nested_grid_equals_reshape_sum():
     """On an exactly nested grid the overlap rebin reduces to reshape-sum."""
-    centers, edges = spectral_grid(50.0, 600.0, 700.0)
-    n = centers.shape[0]
-    _, edges_hi = spectral_grid(50.0, 600.0, 700.0, oversample=4)
+    edges = spectral_grid(50.0, 600.0, 700.0)
+    n = len(edges)
+    edges_hi = spectral_grid(50.0, 600.0, 700.0, oversample=4)
     vals = (jnp.arange(n * 4, dtype=float) + 1.0) ** 1.3
     out = rebin_channels(vals, edges_hi, edges)
     assert jnp.allclose(out, vals.reshape(n, 4).sum(axis=1), rtol=1e-10)
@@ -95,10 +111,10 @@ def test_rebin_along_cube_axis():
     cube = jax.random.uniform(jax.random.PRNGKey(0), (12, 3, 2))
     out = rebin_channels(cube, src_edges, dst_edges, axis=0)
     assert out.shape == (4, 3, 2)
-    assert jnp.allclose(out.sum(axis=0), cube.sum(axis=0), rtol=1e-12)
+    assert jnp.allclose(out.sum(axis=0), cube.sum(axis=0), rtol=2e-15, atol=0)
 
 
 def test_rebin_partial_overlap_takes_fraction():
     """A destination bin covering half a source bin takes half its flux."""
-    out = rebin_channels(jnp.array([2.0]), jnp.array([0.0, 1.0]), jnp.array([0.0, 0.5]))
+    out = rebin_channels(jnp.array([2.0]), (Band(1.0, 2.0),), (Band(1.0, 1.5),))
     assert jnp.allclose(out, jnp.array([1.0]))

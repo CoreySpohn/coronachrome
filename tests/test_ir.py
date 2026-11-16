@@ -1,57 +1,51 @@
-"""Tests for the Spatial Channel IR data model."""
+"""SpatialChannelIR construction checks."""
 
+from dataclasses import replace
+
+import equinox as eqx
 import jax.numpy as jnp
 import pytest
+from conftest import sky_grid
+from hwoutils.grids import PixelGrid
+from hwoutils.spectral import Band
 
-from coronachrome.ir import SpatialChannelIR
+from coronachrome import LensletLayout, SpatialChannelIR
+from coronachrome._collection import cell_overlap
 
 
-def _ir(n_channels=4, n_wav=3, n_fp=4, n_psf=9):
+def _ir():
+    layout = LensletLayout(2)
+    grid, indices = layout.image_geometry(0.2, 0.0, None)
     return SpatialChannelIR(
-        spatial_src=jnp.zeros((n_channels, n_fp), dtype=jnp.int32),
-        spatial_w=jnp.ones((n_channels, n_fp)) / n_fp,
-        det_rows=jnp.zeros((n_channels, n_wav, n_psf), dtype=jnp.int32),
-        det_vals=jnp.ones((n_channels, n_wav, n_psf)) / n_psf,
-        n_channels=n_channels,
-        n_wav=n_wav,
-        fp_shape=(16, 16),
-        det_shape=(32, 32),
+        jnp.zeros((4, 1, 9), dtype=int),
+        jnp.ones((4, 1, 9)) / 9,
+        indices,
+        (Band(650, 670),),
+        sky_grid((16, 16)),
+        grid,
+        PixelGrid.regular((32, 32), 13e-6, "meter"),
+        layout,
+        (grid,),
+        cell_overlap(sky_grid((16, 16)), (grid,), (0, 2, 1, 3)),
     )
 
 
 def test_constructs():
-    """A well-formed IR constructs and exposes its static shape fields."""
+    """A coherent IR carries bands and both physical grids."""
     ir = _ir()
-    assert ir.n_channels == 4
-    assert ir.det_vals.shape == (4, 3, 9)
+    assert ir.n_channels == 4 and ir.n_wav == 1
+    assert ir.det_shape == (32, 32)
 
 
 def test_rejects_mismatched_spatial():
-    """Mismatched spatial_src / spatial_w shapes raise ValueError."""
-    with pytest.raises(ValueError, match="spatial"):
-        SpatialChannelIR(
-            spatial_src=jnp.zeros((4, 4), dtype=jnp.int32),
-            spatial_w=jnp.ones((4, 5)),
-            det_rows=jnp.zeros((4, 3, 9), dtype=jnp.int32),
-            det_vals=jnp.ones((4, 3, 9)),
-            n_channels=4,
-            n_wav=3,
-            fp_shape=(16, 16),
-            det_shape=(32, 32),
-        )
+    """A channel-to-pixel mapping must cover every lenslet."""
+    ir = _ir()
+    with pytest.raises(ValueError, match="lenslet_indices"):
+        replace(ir, lenslet_indices=jnp.zeros(5, dtype=int))
 
 
 def test_rejects_wrong_n_channels():
-    """A det_rows leading dim that disagrees with n_channels raises ValueError."""
-    ir = _ir()
+    """Footprint dimensions must agree with layout and bands."""
     with pytest.raises(ValueError, match="n_channels"):
-        SpatialChannelIR(
-            spatial_src=ir.spatial_src,
-            spatial_w=ir.spatial_w,
-            det_rows=ir.det_rows,
-            det_vals=ir.det_vals,
-            n_channels=99,
-            n_wav=3,
-            fp_shape=(16, 16),
-            det_shape=(32, 32),
-        )
+        replace(_ir(), layout=LensletLayout(3))
+    assert eqx.is_array(_ir().det_vals)

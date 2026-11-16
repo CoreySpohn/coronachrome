@@ -82,7 +82,7 @@ save_psflet_pack("psflets.npz", pack)
 disperser = LensletDisperser(
     ..., psflet_kind="template", psflet_pack_path="psflets.npz"
 )
-ir = build_ir(disperser, lam, fp_shape=fp_shape, fp_px_per_lenslet=4.0)
+ir = build_ir(disperser, bands, fp_grid)
 ```
 
 {func}`~coronachrome.analytic_psflet_pack` is the reference emitter: it
@@ -94,7 +94,8 @@ external generator.
 At build time, each lenslet is assigned its nearest `field_xy` anchor, the
 anchor's planes are blended linearly in wavelength, and the blended plane is
 bilinear-sampled at the footprint pixel offsets with the same
-line-spread-function smear as the analytic path. When `centroids` are present
+band Quadrature as the analytic path. Entire Bands must lie inside the pack
+range, including their edges; centre-only wavelength coverage is insufficient. When `centroids` are present
 the interpolated corrections shift each anchor's trace centroids before the
 footprints are placed, so a field-dependent wavelength solution rides in the
 same pack. Offsets beyond the tabulated extent contribute zero, and a build
@@ -118,7 +119,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from optixstuff.disperser import LensletDisperser
 
-from coronachrome import analytic_psflet_pack, build_ir
+from hwoutils.grids import PixelGrid
+from coronachrome import analytic_psflet_pack, build_ir, channel_edges, channel_centers
 from coronachrome import viz
 
 jax.config.update("jax_enable_x64", True)
@@ -132,6 +134,7 @@ pack = analytic_psflet_pack(
 )
 disperser = LensletDisperser(
     pitch_m=174e-6,
+    sky_pitch_arcsec=0.025,
     pixsize_m=13e-6,
     angle_rad=float(np.arctan(0.5)),
     lam_ref_nm=660.0,
@@ -144,7 +147,10 @@ disperser = LensletDisperser(
     psflet_kind="template",
     detector_shape=(96, 96),
 )
-ir = build_ir(disperser, lam, (40, 40), fp_px_per_lenslet=5.0, psflet_pack=pack)
+bands = channel_edges(6, 600.0, 720.0)
+fp_grid = PixelGrid.regular((40, 40), 0.005, "arcsec")
+ir = build_ir(disperser, bands, fp_grid, psflet_pack=pack)
+lam = channel_centers(bands)
 fig, ax = plt.subplots(figsize=(7.5, 3.2), layout="constrained")
 viz.plot_traces(
     ir, disperser, lam, channels=(12,), psflet_pack=pack, colorbar="figure", ax=ax

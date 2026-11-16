@@ -22,7 +22,7 @@ def test_dispersion_matches_crispy_log_form():
 
 def test_centroids_shape_and_center():
     """Centroids have shape (n_lenslets, n_wav); center lenslet sits at det center."""
-    pos = square_grid(4)
+    pos = square_grid(4, lenslet_origin="central_index")
     disp = dispersion_px(
         jnp.array([100.0, 0.0]), 660.0, jnp.array([650.0, 660.0, 670.0])
     )
@@ -32,5 +32,5 @@ def test_centroids_shape_and_center():
     assert xc.shape == (16, 3)
     assert yc.shape == (16, 3)
     center_idx = int(jnp.argmin(jnp.abs(pos[:, 0]) + jnp.abs(pos[:, 1])))
-    assert jnp.allclose(xc[center_idx, 1], 128.0)
-    assert jnp.allclose(yc[center_idx, 1], 128.0)
+    assert jnp.allclose(xc[center_idx, 1], 127.5)
+    assert jnp.allclose(yc[center_idx, 1], 127.5)

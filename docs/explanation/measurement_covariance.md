@@ -96,18 +96,23 @@ import jax.numpy as jnp
 
 from coronachrome import (
     amplitude_basis,
+    extraction_weights,
     marginal_covariance,
     spatial_sample,
     unmodeled_covariance,
 )
 
-# planet_template: (n_wav, ny, nx), unit sum per plane, so amplitudes are rates.
+# planet_template: Image on ir.fp_grid, unit sum per wavelength plane.
 # speckle_modes:   (n_modes, n_wav, ny, nx) from a speckle generator.
 # mode_variance:   (n_modes,) prior variance per mode, the generator PSD.
 science = amplitude_basis(planet_template, ir)
-nuisance = jax.vmap(spatial_sample, in_axes=(0, None))(speckle_modes, ir)
+from dataclasses import replace
 
-weights = 1.0 / detector.noise_variance(rate_map, exposure_time).reshape(-1)
+nuisance = jax.vmap(
+    lambda mode: spatial_sample(replace(planet_template, data=mode), ir)
+)(speckle_modes)
+
+weights = extraction_weights(renderer, detector, electron_rates, plan)
 conditional = marginal_covariance(renderer, science, weights=weights)
 marginal = marginal_covariance(
     renderer, science, nuisance, weights=weights, nuisance_cov=mode_variance
@@ -119,6 +124,11 @@ unmodeled = unmodeled_covariance(
 sigma = jnp.sqrt(jnp.diag(marginal))  # honest per-wavelength error bars
 gap = 0.5 * jnp.linalg.slogdet(unmodeled)[1] - 0.5 * jnp.linalg.slogdet(marginal)[1]
 ```
+
+`electron_rates` is an optixstuff ElectronRates record on the detector and
+`plan` is a FramePlan. Source bands are collapsed before detector moments so
+read, dark and CIC noise are paid once per detector pixel. Count variances
+produce count covariance; extraction does not silently convert counts to rates.
 
 The last line is the information gap in nats: how much is lost by ignoring the
 nuisance rather than marginalizing it.

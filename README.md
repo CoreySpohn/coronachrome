@@ -51,6 +51,7 @@ pip install coronachrome
 
 ```python
 import jax.numpy as jnp
+from hwoutils.grids import Image, PixelGrid, SkyOrientation
 from optixstuff import LensletDisperser
 
 from coronachrome import IFSRenderer, build_ir, lstsq, spectral_grid
@@ -71,14 +72,41 @@ disperser = LensletDisperser(
     sky_pitch_arcsec=0.014,
 )
 
-lam, _ = spectral_grid(resolving_power=50.0, lam_min_nm=620.0, lam_max_nm=700.0)
-ir = build_ir(disperser, lam, fp_shape=(64, 64), fp_pixel_scale_arcsec=0.007)
+bands = spectral_grid(resolving_power=50.0, lam_min_nm=620.0, lam_max_nm=700.0)
+fp_grid = PixelGrid.regular(
+    (64, 64), 0.007, "arcsec", orientation=SkyOrientation(pa_y_deg=0, parity=-1)
+)
+ir = build_ir(disperser, bands, fp_grid)
 renderer = IFSRenderer(ir)
 
-cube = jnp.ones((lam.shape[0], 64, 64))  # focal-plane rate maps
-detector = renderer.forward_spmv(cube)  # dispersed micro-spectra
-spectra = lstsq(renderer, detector)  # per-spaxel extraction
+cube = Image(
+    jnp.ones((len(bands), 64, 64)),
+    fp_grid,
+    ("wavelength",),
+    measure="per_pixel",
+    quantity="phot/s",
+    reconstruction="nearest",
+)
+detector = renderer.forward_spmv(cube)  # Image on a meter detector grid
+spectra = lstsq(renderer, detector)  # Image on the lenslet sky grid
+assert spectra.quantity == "phot/s"
 ```
+
+`LensletLayout(..., lenslet_origin="geometric")` is the default: square centres
+subtract `(n-1)/2`; hex centres also remove the mean row stagger. The explicit
+`"central_index"` option retains the historical `n//2` convention. Focal-plane
+centres come from the input grid; detector centres use `(n-1)/2`.
+
+Channels are `hwoutils.spectral.Band` intervals. `channel_centers(bands)` retains
+geometric-mean reference wavelengths in nm, distinct from `Band.center_nm`.
+Lenslet collection exactly integrates piecewise-constant focal pixels by
+cell/pixel overlap; smooth reconstructions, including band-limited images,
+use that approximation (see the sampling contracts). An input in lambda/D must
+convert its grid through its `Frame` before rendering. Extraction preserves
+the detector quantity, so electron counts produce extracted electron counts.
+Use `detector_statistics` and `extraction_weights` with `ElectronRates` and a
+`FramePlan` for count statistics; detector yield belongs in `detector.electrons`
+before wavelength contributions are combined.
 
 ## Documentation
 

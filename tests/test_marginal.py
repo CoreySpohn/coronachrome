@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+from conftest import bands_at, focal_image, sky_grid
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -17,6 +18,7 @@ from coronachrome.render import IFSRenderer, spatial_sample
 def _renderer(n=4, n_wav=5, fp=(32, 32)):
     disp = LensletDisperser(
         pitch_m=174e-6,
+        sky_pitch_arcsec=0.2,
         pixsize_m=13e-6,
         angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
         lam_ref_nm=660.0,
@@ -27,10 +29,10 @@ def _renderer(n=4, n_wav=5, fp=(32, 32)):
         grid_kind="square",
         n_lenslets=n,
         psflet_kind="gaussian",
-        detector_shape=(200, 200),
+        detector_shape=(96, 96),
     )
     lam = jnp.linspace(580.0, 740.0, n_wav)
-    ir = build_ir(disp, lam, fp_shape=fp, fp_px_per_lenslet=2.0)
+    ir = build_ir(disp, fp_grid=sky_grid(fp, 0.2 / (2.0)), bands=bands_at(lam))
     return IFSRenderer(ir), n_wav
 
 
@@ -57,7 +59,9 @@ def _nuisance_basis(r, n_wav, n_modes=3, key=None):
             for i, k in enumerate(keys)
         ]
     )
-    return jax.vmap(spatial_sample, in_axes=(0, None))(cubes, r.ir)
+    return jax.vmap(lambda cube: spatial_sample(focal_image(cube, r.ir.fp_grid), r.ir))(
+        cubes
+    )
 
 
 def _dense_fisher(r, cols, weights):
@@ -73,9 +77,9 @@ def test_amplitude_basis_is_block_diagonal_in_wavelength():
     """One free amplitude per wavelength: column j touches only wavelength j."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    basis = amplitude_basis(template, r.ir)
+    basis = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     assert basis.shape == (n_wav, r.ir.n_channels, n_wav)
-    z = spatial_sample(template, r.ir)
+    z = spatial_sample(focal_image(template, r.ir.fp_grid), r.ir)
     for j in range(n_wav):
         off = jnp.delete(basis[j], j, axis=1)
         assert float(jnp.abs(off).max()) == 0.0
@@ -86,10 +90,12 @@ def test_amplitude_basis_contracts_to_a_scaled_template():
     """Summing the basis against a spectrum reproduces the scaled template."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    basis = amplitude_basis(template, r.ir)
+    basis = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     spectrum = jnp.linspace(0.5, 2.0, n_wav)
     contracted = jnp.tensordot(spectrum, basis, axes=(0, 0))
-    direct = spatial_sample(template * spectrum[:, None, None], r.ir)
+    direct = spatial_sample(
+        focal_image(template * spectrum[:, None, None], r.ir.fp_grid), r.ir
+    )
     assert jnp.allclose(contracted, direct, rtol=1e-10, atol=1e-12)
 
 
@@ -97,7 +103,7 @@ def test_marginal_without_nuisance_is_the_conditional_fisher_inverse():
     """No nuisance block means the plain (C^T W C)^-1 of the science block."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    basis = amplitude_basis(template, r.ir)
+    basis = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     cov = marginal_covariance(r, basis)
     ref = np.linalg.inv(_dense_fisher(r, basis, None))
     assert cov.shape == (n_wav, n_wav)
@@ -108,7 +114,7 @@ def test_marginal_equals_the_joint_inverse_science_block():
     """The Schur complement matches the science block of the full joint inverse."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    science = amplitude_basis(template, r.ir)
+    science = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     nuisance = _nuisance_basis(r, n_wav)
     n_mode = nuisance.shape[0]
     prior = jnp.diag(jnp.linspace(4.0, 1.0, n_mode))
@@ -127,12 +133,12 @@ def test_marginalizing_costs_information_but_less_than_ignoring():
     """Conditional <= marginal <= unmodeled, per wavelength."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    science = amplitude_basis(template, r.ir)
+    science = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     nuisance = _nuisance_basis(r, n_wav)
 
     conditional = jnp.diag(marginal_covariance(r, science))
     # Nuisance prior comparable to the conditional error: the regime where the
-    # speckle and photon floors are of the same order (the RI-10 regime).
+    # speckle and photon floors are of the same order.
     prior = jnp.eye(nuisance.shape[0]) * float(jnp.mean(conditional))
     marginal = jnp.diag(marginal_covariance(r, science, nuisance, nuisance_cov=prior))
     unmodeled = jnp.diag(unmodeled_covariance(r, science, nuisance, nuisance_cov=prior))
@@ -147,7 +153,7 @@ def test_weights_scale_the_covariance_inversely():
     """Doubling the inverse-variance weights halves the covariance."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    science = amplitude_basis(template, r.ir)
+    science = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     nuisance = _nuisance_basis(r, n_wav)
     n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
     w1 = jnp.ones(n_det)
@@ -163,7 +169,7 @@ def test_degenerate_nuisance_destroys_the_science_information():
     """A nuisance equal to the science block leaves nothing identifiable."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    science = amplitude_basis(template, r.ir)
+    science = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     conditional = jnp.diag(marginal_covariance(r, science))
     # A prior far wider than the science error leaves the identical nuisance
     # basis effectively unconstrained.
@@ -176,7 +182,7 @@ def test_marginal_covariance_matches_monte_carlo():
     """The closed form reproduces the joint estimator's sampling covariance."""
     r, n_wav = _renderer()
     template = _blob(r.ir.fp_shape, n_wav, (7.0, 9.0))
-    science = amplitude_basis(template, r.ir)
+    science = amplitude_basis(focal_image(template, r.ir.fp_grid), r.ir)
     nuisance = _nuisance_basis(r, n_wav)
     n_mode = nuisance.shape[0]
     prior = jnp.diag(jnp.linspace(2.0, 0.5, n_mode))

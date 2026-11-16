@@ -3,13 +3,14 @@
 A JAX lenslet integral-field-spectrograph (IFS) forward model and spectral
 extractor for the Habitable Worlds Observatory.
 
-`coronachrome` takes a multi-wavelength focal-plane datacube (for example from
+`coronachrome` takes a multi-wavelength focal-plane `hwoutils.grids.Image` (for example from
 {mod}`coronagraphoto`) together with a hardware description (an
 {class}`optixstuff.OpticalPath` carrying a lenslet disperser), and produces the
 dispersed IFS detector image: a field of per-lenslet micro-spectra, where each
 lenslet's light is spread into a short spectrum on the detector. It also inverts
 that forward model to recover per-lenslet spectra from a detector image, with
-calibrated uncertainties. The whole forward and inverse path is JAX-native,
+calibrated uncertainties. Channels are `Band`s; detector and extracted outputs
+are Images with explicit grids, measures and quantities. The whole forward and inverse path is JAX-native,
 so it is JIT-compilable, GPU-capable, and differentiable end to end.
 
 ## What it does
@@ -81,7 +82,7 @@ three axes:
   (micro-pupil, sinc-squared wings, pinhole masks, field-dependent
   aberrations, per-lenslet wavelength solutions) is planned in the
   [physicaloptix](https://pypi.org/project/physicaloptix/) package, alongside
-  an end-to-end validation of the forward model against CRISPY output for an
+  an end-to-end benchmark of the forward model against CRISPY output for an
   identical scene.
 
 ```{toctree}

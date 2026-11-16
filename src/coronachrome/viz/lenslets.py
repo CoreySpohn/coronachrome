@@ -17,9 +17,9 @@ quantities:
 - the entrance **optical center** belongs to whoever produced the cube, so it
   is drawn only where the caller states it (``optical_center_px``);
 - the **lenslet-grid origin** is where lenslet-index ``(0, 0)`` sits on the
-  entrance plane, ``(fp_shape[1] / 2, fp_shape[0] / 2)``;
+  entrance plane, ``(fp_grid.center_x, fp_grid.center_y)``;
 - the **detector trace origin** is where that origin lands on the detector
-  at zero dispersion offset, ``(detector_shape[1] / 2, detector_shape[0] / 2)``.
+  at zero dispersion offset, ``((nx-1)/2, (ny-1)/2)``.
 """
 
 import jax.numpy as jnp
@@ -27,11 +27,11 @@ import numpy as np
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import (
-    _resolve_fp_px_per_lenslet,
     detector_centroids,
     detector_trace_origin,
     lenslet_cell_centers,
 )
+from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.viz._require import eyepiece
 
@@ -208,10 +208,10 @@ def _origin_marker(ax, xy, marker, label, text_offset_pt, color, artists):
 
 def plot_lenslet_cells(
     disperser_or_centers,
-    fp_shape,
+    fp_grid,
     *,
+    layout=None,
     fp_px_per_lenslet=None,
-    fp_pixel_scale_arcsec=None,
     angle_rad=None,
     image=None,
     plane=None,
@@ -242,8 +242,8 @@ def plot_lenslet_cells(
 
     The cells are the ones :func:`coronachrome.build_ir` integrates: squares
     of side ``fp_px_per_lenslet`` rotated by the lenslet angle. On a
-    ``grid_kind="hex"`` descriptor those squares do not tile the plane, and
-    the drawing shows that rather than hiding it.
+    ``grid_kind="hex"`` descriptor these squares overlap; they are not hexagonal
+    Voronoi apertures.
 
     Args:
         disperser_or_centers: A ``LensletDisperser`` (cell centers and the
@@ -251,12 +251,10 @@ def plot_lenslet_cells(
             :func:`coronachrome.build.lenslet_cell_centers`), or bare
             ``(n, 2)`` cell centers ``(x, y)`` in cube pixels, which then need
             ``fp_px_per_lenslet`` and ``angle_rad``.
-        fp_shape: Focal-plane cube ``(ny, nx)``.
-        fp_px_per_lenslet: Cube pixels per lenslet pitch (the override, as in
-            ``build_ir``). With a disperser, pass this or
-            ``fp_pixel_scale_arcsec``.
-        fp_pixel_scale_arcsec: Cube plate scale; the sampling is then derived
-            from ``disperser.sky_pitch_arcsec`` exactly as ``build_ir`` does.
+        fp_grid: Focal-plane PixelGrid in arcsec.
+        layout: LensletLayout defining the origin convention.
+        fp_px_per_lenslet: Cell width in source pixels, for bare centres only.
+            With a disperser the width derives from sky_pitch_arcsec and fp_grid.
         angle_rad: Cell rotation for bare centers (ignored with a disperser).
         image: Optional entrance image, ``(ny, nx)`` or a cube
             ``(n_wav, ny, nx)`` of bin-integrated rates.
@@ -321,13 +319,17 @@ def plot_lenslet_cells(
 
     if isinstance(disperser_or_centers, LensletDisperser):
         disperser = disperser_or_centers
-        cell_px = _resolve_fp_px_per_lenslet(
-            disperser, fp_px_per_lenslet, fp_pixel_scale_arcsec
-        )
-        angle = float(disperser.angle_rad)
-        cx, cy = lenslet_cell_centers(disperser, fp_shape, cell_px)
+        layout = layout or LensletLayout(disperser.n_lenslets, disperser.grid_kind)
+        target = layout.collection_grids(
+            disperser.sky_pitch_arcsec, float(disperser.angle_rad), fp_grid.orientation
+        )[0]
+        local = np.array([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]])
+        offsets = local @ np.asarray(target.basis).T
+        offsets = np.asarray(fp_grid.unit_to_pixel(offsets[:, 0], offsets[:, 1])).T
+        offsets -= [fp_grid.center_x, fp_grid.center_y]
+        cx, cy = lenslet_cell_centers(disperser, fp_grid, layout=layout)
         ox, oy = lenslet_cell_centers(
-            disperser, fp_shape, cell_px, positions=jnp.zeros((1, 2))
+            disperser, fp_grid, layout=layout, positions=jnp.zeros((1, 2))
         )
         grid_origin = (float(ox[0]), float(oy[0]))
     else:
@@ -346,15 +348,15 @@ def plot_lenslet_cells(
 
     if ax is None:
         _, ax = plt.subplots(layout="constrained")
-    extent = _edge_extent(fp_shape)
+    extent = _edge_extent(fp_grid.shape)
     artists = {}
     if image is not None:
         img = np.asarray(image, dtype=float)
         if img.ndim == 3:
             img = img.sum(axis=0) if plane is None else img[plane]
-        if img.shape != tuple(fp_shape):
+        if img.shape != fp_grid.shape:
             raise ValueError(
-                f"image shape {img.shape} does not match fp_shape {tuple(fp_shape)}"
+                f"image shape {img.shape} does not match fp_shape {fp_grid.shape}"
             )
         drawn = _log_image(
             ep,
@@ -371,7 +373,10 @@ def plot_lenslet_cells(
         )
         artists.update(drawn.artists)
 
-    corners = _cell_corners(cx, cy, cell_px, angle)
+    if isinstance(disperser_or_centers, LensletDisperser):
+        corners = np.stack([cx, cy], axis=-1)[:, None, :] + offsets[None]
+    else:
+        corners = _cell_corners(cx, cy, cell_px, angle)
     kw = {
         "facecolors": "none",
         "edgecolors": [_neutral(0.55)],
@@ -525,6 +530,7 @@ def plot_traces(
     *,
     channels,
     psflet_pack=None,
+    layout=None,
     marked=None,
     scan_index=None,
     scan_channel=None,
@@ -587,6 +593,7 @@ def plot_traces(
         wavelengths_nm: ``(n_wav,)`` bin centers the IR was built on.
         channels: Channel indices of the traces to draw.
         psflet_pack: Template pack, as passed to ``build_ir``.
+        layout: LensletLayout for bare descriptor calls; an IR supplies its own.
         marked: Wavelength indices whose centroids are marked; None marks
             every bin.
         scan_index: Wavelength index of the highlighted PSFlet; None draws
@@ -696,8 +703,11 @@ def plot_traces(
 
     if isinstance(disperser_or_centroids, LensletDisperser):
         disperser = disperser_or_centroids
-        xc, yc = detector_centroids(disperser, lam, psflet_pack=psflet_pack)
-        gx, gy = detector_centroids(disperser, lam, corrected=False)
+        layout = ir.layout if ir is not None else layout
+        xc, yc = detector_centroids(
+            disperser, lam, psflet_pack=psflet_pack, layout=layout
+        )
+        gx, gy = detector_centroids(disperser, lam, corrected=False, layout=layout)
         trace_origin = detector_trace_origin(disperser)
     else:
         xc, yc = (np.asarray(a, dtype=float) for a in disperser_or_centroids)

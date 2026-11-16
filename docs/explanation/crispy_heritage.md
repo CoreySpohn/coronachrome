@@ -62,7 +62,7 @@ channel, which is precisely what one pass of the inner loop deposits on the dete
 (See [mathematical formulation](mathematical_formulation) for $H$ and the inverse
 problem in full.)
 
-The two codes therefore compute the same operator. CRISPY assembles and applies $H$
+The two codes share this operator structure; their discretizations differ. CRISPY assembles and applies $H$
 implicitly, rebuilding the placed PSFlets inside the per-lenslet loop on every call.
 coronachrome assembles $H$ once, offline, into the Spatial Channel IR and a sparse
 `H_mono` matrix (`build_ir`), and then applies it as a single matvec (`forward_spmv`).
@@ -74,10 +74,10 @@ inverse of the same $H$ (`lstsq`), and `intOptimalExtract` is the matched filter
 
 | CRISPY | coronachrome | relation |
 |---|---|---|
-| `processImagePlane` (rotate + rebin to lenslets) | spatial sampling $z = Sf$ | same flux-conserving rotated rebin; baked into $H$ offline |
-| `propagateLenslets` loop | $y = Hz$ (`forward_spmv`) | identical operator; the loop is the matvec |
+| `processImagePlane` (rotate + rebin to lenslets) | spatial sampling $z = Sf$ | exact cell/pixel overlap for piecewise-constant density |
+| `propagateLenslets` loop | $y = Hz$ (`forward_spmv`) | same sum structure; discretizations differ |
 | `hires_arrs` PSFlet templates | analytic Gaussian / Moffat PSFlet | same role, the column shape; different source |
-| `distort` / wavecal centroids | dispersion-polynomial centroids | identical for the analytic case (cross-checked) |
+| `distort` / wavecal centroids | dispersion-polynomial centroids | same analytic law; explicit origins differ |
 | `rebinDetector` | folded into the $H$ footprint weights | absorbed |
 | `lstsqExtract` | `lstsq` | least squares on the same $H$ |
 | `intOptimalExtract` | `matched_filter` | matched filter on the same $H$ |
@@ -96,12 +96,13 @@ where the physics differs.
 - **Spatial sampling ($S$).** Both integrate each lenslet's flux over its rotated
   cell. CRISPY does this at runtime by rotating the whole focal plane by `philens`
   and flux-conservatively rebinning (a `map_coordinates` per wavelength).
-  coronachrome bakes the same rotated, flux-conserving rebin into the sparse
-  footprint offline, so the runtime is a single gather with no `map_coordinates`.
+  coronachrome clips cell/pixel polygons once on the host and applies a sparse
+  overlap matrix at runtime. This is exact for piecewise-constant density;
+  smooth reconstructions use that approximation.
 - **Centroids ($c_\ell(\lambda_w)$).** CRISPY can use a fitted wavelength solution or
   the analytic `distort` model. coronachrome uses the analytic dispersion polynomial
-  in $\log(\lambda / \lambda_\mathrm{ref})$, whose centroids reproduce CRISPY's
-  `distort` form exactly. CRISPY's hardcoded twenty-coefficient WFIRST polynomial is
+  in $\log(\lambda / \lambda_\mathrm{ref})$, with explicit geometric versus central-index lenslet origins and geometric
+  detector pixel centres. CRISPY's hardcoded twenty-coefficient WFIRST polynomial is
   the special case of a configurable one.
 - **Detector noise.** CRISPY models an EMCCD (electron-multiplying register
   statistics, photon counting, charge traps). coronachrome emits a noiseless rate map
@@ -121,7 +122,7 @@ where the physics differs.
 - **Generality.** Hexagonal as well as square grids, Moffat as well as Gaussian
   PSFlets, and a configurable dispersion polynomial.
 
-## Validation
+## Verification
 
 coronachrome's lenslet centroids are cross-checked against CRISPY's rotation, scale,
 and `distort` form directly, and match to numerical precision. The forward and

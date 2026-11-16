@@ -3,6 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from conftest import bands_at, sky_grid
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -18,6 +19,7 @@ from coronachrome.templates import (
 def _disp(n=4, **overrides):
     kwargs = dict(
         pitch_m=174e-6,
+        sky_pitch_arcsec=0.2,
         pixsize_m=13e-6,
         angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
         lam_ref_nm=660.0,
@@ -35,6 +37,7 @@ def _disp(n=4, **overrides):
 
 
 def _gaussian_pack(lam, sigma=0.7, ref_nm=660.0, **kwargs):
+    lam = lam.at[0].add(-1e-3).at[-1].add(1e-3)
     return analytic_psflet_pack(
         "gaussian", jnp.array([sigma]), lam, psflet_ref_nm=ref_nm, **kwargs
     )
@@ -111,13 +114,18 @@ def test_template_mode_parity_with_gaussian():
     disp_g = _disp(4)
     disp_t = _disp(4, psflet_kind="template")
     pack = _gaussian_pack(lam, step=0.0625)
-    ir_g = build_ir(disp_g, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0)
+    ir_g = build_ir(
+        disp_g, fp_grid=sky_grid((32, 32), 0.2 / (2.0)), bands=bands_at(lam)
+    )
     ir_t = build_ir(
-        disp_t, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0, psflet_pack=pack
+        disp_t,
+        psflet_pack=pack,
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+        bands=bands_at(lam),
     )
     assert jnp.array_equal(ir_g.det_rows, ir_t.det_rows)
     assert jnp.allclose(ir_g.det_vals, ir_t.det_vals, atol=2e-3)
-    assert jnp.array_equal(ir_g.spatial_src, ir_t.spatial_src)
+    assert ir_g.lenslet_grid == ir_t.lenslet_grid
 
 
 def test_template_mode_requires_pack():
@@ -125,9 +133,8 @@ def test_template_mode_requires_pack():
     with pytest.raises(ValueError, match="psflet_pack"):
         build_ir(
             _disp(4, psflet_kind="template"),
-            jnp.array([660.0]),
-            fp_shape=(32, 32),
-            fp_px_per_lenslet=2.0,
+            fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+            bands=bands_at(jnp.array([660.0])),
         )
 
 
@@ -138,9 +145,14 @@ def test_template_mode_loads_descriptor_path(tmp_path):
     path = tmp_path / "pack.npz"
     save_psflet_pack(path, pack)
     disp = _disp(4, psflet_kind="template", psflet_pack_path=str(path))
-    ir_from_path = build_ir(disp, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0)
+    ir_from_path = build_ir(
+        disp, fp_grid=sky_grid((32, 32), 0.2 / (2.0)), bands=bands_at(lam)
+    )
     ir_from_arg = build_ir(
-        disp, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0, psflet_pack=pack
+        disp,
+        psflet_pack=pack,
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+        bands=bands_at(lam),
     )
     assert jnp.allclose(ir_from_path.det_vals, ir_from_arg.det_vals)
 
@@ -151,10 +163,9 @@ def test_band_outside_pack_raises():
     with pytest.raises(ValueError, match="tabulated"):
         build_ir(
             _disp(4, psflet_kind="template"),
-            jnp.array([700.0]),
-            fp_shape=(32, 32),
-            fp_px_per_lenslet=2.0,
             psflet_pack=pack,
+            fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+            bands=bands_at(jnp.array([700.0])),
         )
 
 
@@ -187,10 +198,16 @@ def test_centroid_corrections_shift_footprints():
     pack_corr = _gaussian_pack(lam, centroids=centroids)
     disp = _disp(4, psflet_kind="template")
     ir0 = build_ir(
-        disp, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0, psflet_pack=pack_plain
+        disp,
+        psflet_pack=pack_plain,
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+        bands=bands_at(lam),
     )
     ir2 = build_ir(
-        disp, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0, psflet_pack=pack_corr
+        disp,
+        psflet_pack=pack_corr,
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+        bands=bands_at(lam),
     )
     nx = disp.detector_shape[1]
     x0 = (ir0.det_rows % nx) * ir0.det_vals
@@ -206,17 +223,25 @@ def test_nearest_field_anchor_selects_template():
     twice-wider one, so left-side channels must render narrower footprints.
     """
     lam = jnp.array([660.0])
-    narrow = analytic_psflet_pack("gaussian", jnp.array([0.7]), lam, psflet_ref_nm=None)
-    wide = analytic_psflet_pack("gaussian", jnp.array([1.4]), lam, psflet_ref_nm=None)
+    narrow = analytic_psflet_pack(
+        "gaussian", jnp.array([0.7]), jnp.array([659.0, 661.0]), psflet_ref_nm=None
+    )
+    wide = analytic_psflet_pack(
+        "gaussian", jnp.array([1.4]), jnp.array([659.0, 661.0]), psflet_ref_nm=None
+    )
     pack = PsfletPack(
         templates=jnp.concatenate([narrow.templates, wide.templates], axis=0),
         offsets=narrow.offsets,
-        wavelengths_nm=lam,
+        wavelengths_nm=narrow.wavelengths_nm,
         field_xy=jnp.array([[-1.5, 0.0], [1.5, 0.0]]),
     )
     disp = _disp(4, psflet_kind="template", angle_rad=0.0)
     ir = build_ir(
-        disp, lam, fp_shape=(32, 32), fp_px_per_lenslet=2.0, psflet_pack=pack, half=6
+        disp,
+        psflet_pack=pack,
+        half=6,
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+        bands=bands_at(lam),
     )
     from coronachrome.grids import square_grid
 
@@ -241,11 +266,10 @@ def test_footprint_past_template_extent_warns():
     with pytest.warns(UserWarning, match="template extent"):
         build_ir(
             _disp(4, psflet_kind="template"),
-            jnp.array([660.0]),
-            fp_shape=(32, 32),
-            fp_px_per_lenslet=2.0,
             psflet_pack=pack,
             half=6,
+            fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+            bands=bands_at(jnp.array([660.0])),
         )
 
 

@@ -1,9 +1,11 @@
 """Tests for spectral extraction from a dispersed IFS detector image."""
 
 import equinox as eqx
+import ineedvalidation as vv
 import jax
 import jax.numpy as jnp
 import numpy as np
+from conftest import bands_at, sky_grid
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -23,9 +25,10 @@ def _dense_normal(r, weights):
     return hd.T @ (w[:, None] * hd)
 
 
-def _renderer(n=6, n_wav=9, fp=(64, 64)):
+def _renderer(n=2, n_wav=5, fp=(32, 32)):
     disp = LensletDisperser(
         pitch_m=174e-6,
+        sky_pitch_arcsec=0.2,
         pixsize_m=13e-6,
         angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
         lam_ref_nm=660.0,
@@ -36,13 +39,13 @@ def _renderer(n=6, n_wav=9, fp=(64, 64)):
         grid_kind="square",
         n_lenslets=n,
         psflet_kind="gaussian",
-        detector_shape=(256, 256),
+        detector_shape=(64, 64),
     )
     # Use linspace over a wide range so adjacent PSFlets are well-separated
     # in pixel space; 9 channels over 620-700 nm packs them too tightly for
     # a matched-filter test (off-diagonal H^T H ~ 50% of diagonal).
     lam = jnp.linspace(580.0, 740.0, n_wav)
-    ir = build_ir(disp, lam, fp_shape=fp, fp_px_per_lenslet=2.0)
+    ir = build_ir(disp, fp_grid=sky_grid(fp, 0.2 / (2.0)), bands=bands_at(lam))
     return IFSRenderer(ir), n_wav
 
 
@@ -51,7 +54,12 @@ def test_matched_filter_correlates_with_truth():
     r, n_wav = _renderer()
     z_true = jax.random.uniform(jax.random.PRNGKey(1), (r.ir.n_channels, n_wav))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
-    z_hat = matched_filter(r, detector)
+    z_hat = r.channel_spectra(
+        matched_filter(
+            r,
+            r.detector_image(detector, "e"),
+        )
+    )
     assert z_hat.shape == (r.ir.n_channels, n_wav)
     c = jnp.corrcoef(z_true.reshape(-1), z_hat.reshape(-1))[0, 1]
     assert float(c) > 0.9
@@ -62,7 +70,12 @@ def test_lstsq_recovers_injected_spectra():
     r, n_wav = _renderer()
     z_true = jax.random.uniform(jax.random.PRNGKey(0), (r.ir.n_channels, n_wav))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
-    z_hat = lstsq(r, detector)
+    z_hat = r.channel_spectra(
+        lstsq(
+            r,
+            r.detector_image(detector, "e"),
+        )
+    )
     assert z_hat.shape == (r.ir.n_channels, n_wav)
     assert jnp.allclose(z_hat, z_true, atol=1e-4)
 
@@ -73,7 +86,9 @@ def test_weighted_lstsq_recovers_spectra():
     z_true = jax.random.uniform(jax.random.PRNGKey(2), (r.ir.n_channels, n_wav))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     weights = 1.0 / jnp.clip(detector.reshape(-1), 1e-3, None)
-    z_hat = lstsq(r, detector, weights=weights)
+    z_hat = r.channel_spectra(
+        lstsq(r, r.detector_image(detector, "e"), weights=weights)
+    )
     assert jnp.allclose(z_hat, z_true, atol=1e-3)
 
 
@@ -83,7 +98,15 @@ def test_lstsq_is_differentiable():
     detector = jnp.ones(r.ir.det_shape)
 
     def loss(d):
-        return jnp.sum(lstsq(r, d) ** 2)
+        return jnp.sum(
+            r.channel_spectra(
+                lstsq(
+                    r,
+                    r.detector_image(d, "e"),
+                )
+            )
+            ** 2
+        )
 
     g = jax.grad(loss)(detector)
     assert g.shape == detector.shape
@@ -110,7 +133,9 @@ def test_lstsq_robust_to_operator_scale():
     z_true = jax.random.uniform(jax.random.PRNGKey(7), (rs.ir.n_channels, n_wav))
     detector = (rs.H_mono @ z_true.reshape(-1)).reshape(rs.ir.det_shape)
     # Data is ~s here, so converge on the relative tolerance only (atol=0).
-    z_hat = lstsq(rs, detector, rtol=1e-8, atol=0.0)
+    z_hat = rs.channel_spectra(
+        lstsq(rs, rs.detector_image(detector, "e"), rtol=1e-8, atol=0.0)
+    )
     assert bool(jnp.all(jnp.isfinite(z_hat)))
     assert jnp.allclose(z_hat, z_true, atol=1e-6)
 
@@ -136,7 +161,9 @@ def test_lstsq_damping_matches_dense_tikhonov():
     zp = np.linalg.solve(dmat + damping * np.eye(ncw), rhs)
     z_ref = (d * zp).reshape(r.ir.n_channels, n_wav)
 
-    z_hat = lstsq(r, detector, damping=damping)
+    z_hat = r.channel_spectra(
+        lstsq(r, r.detector_image(detector, "e"), damping=damping)
+    )
     assert jnp.allclose(z_hat, z_ref, rtol=1e-4, atol=1e-6)
 
 
@@ -145,8 +172,8 @@ def test_lstsq_damping_shrinks_solution():
     r, n_wav = _renderer()
     z_true = jax.random.uniform(jax.random.PRNGKey(6), (r.ir.n_channels, n_wav))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
-    z0 = lstsq(r, detector, damping=0.0)
-    z1 = lstsq(r, detector, damping=1e-1)
+    z0 = r.channel_spectra(lstsq(r, r.detector_image(detector, "e"), damping=0.0))
+    z1 = r.channel_spectra(lstsq(r, r.detector_image(detector, "e"), damping=1e-1))
     assert float(jnp.linalg.norm(z1)) < float(jnp.linalg.norm(z0))
     assert jnp.allclose(z0, z_true, atol=1e-4)  # undamped still recovers truth
 
@@ -158,7 +185,12 @@ def test_lstsq_recovers_sharp_dip_spaxel():
     spec = jnp.ones(n_wav).at[11].set(0.05)  # deep dip at wavelength index 11
     z_true = jnp.ones((r.ir.n_channels, n_wav)).at[ch].set(spec)
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
-    z_hat = lstsq(r, detector)
+    z_hat = r.channel_spectra(
+        lstsq(
+            r,
+            r.detector_image(detector, "e"),
+        )
+    )
     assert jnp.allclose(z_hat[ch], spec, atol=1e-3)
     assert float(z_hat[ch][11]) < 0.2
 
@@ -172,7 +204,9 @@ def test_spectrum_covariance_matches_dense_block():
     )
     ainv = np.linalg.inv(_dense_normal(r, weights))
     chans = jnp.array([r.ir.n_channels // 2, 0])
-    cov = np.asarray(spectrum_covariance(r, weights=weights, channels=chans))
+    cov = np.asarray(
+        spectrum_covariance(r, weights=weights, channels=chans, rtol=1e-11, atol=1e-11)
+    )
     for i, ch in enumerate(np.asarray(chans)):
         base = int(ch) * n_wav
         ref = ainv[base : base + n_wav, base : base + n_wav]
@@ -182,9 +216,9 @@ def test_spectrum_covariance_matches_dense_block():
 def test_spectrum_covariance_many_channels_matches_dense():
     """The lax.map path matches dense (H^T W H)^-1 blocks across many channels."""
     r, n_wav = _renderer()
-    chans = jnp.array([0, 5, 11, 18, r.ir.n_channels - 1])
+    chans = jnp.array([0, 1, 2, r.ir.n_channels - 1])
     ainv = np.linalg.inv(_dense_normal(r, None))
-    cov = np.asarray(spectrum_covariance(r, channels=chans))
+    cov = np.asarray(spectrum_covariance(r, channels=chans, rtol=1e-11, atol=1e-11))
     assert cov.shape == (len(chans), n_wav, n_wav)
     for i, ch in enumerate(np.asarray(chans)):
         base = int(ch) * n_wav
@@ -196,7 +230,7 @@ def test_spectrum_errorbars_is_sqrt_diag():
     """Error bars equal sqrt of the covariance block diagonal."""
     r, _n_wav = _renderer()
     chans = jnp.array([r.ir.n_channels // 2])
-    cov = spectrum_covariance(r, channels=chans)
+    cov = spectrum_covariance(r, channels=chans, rtol=1e-11, atol=1e-11)
     err = spectrum_errorbars(r, channels=chans)
     assert jnp.allclose(err, jnp.sqrt(jnp.diagonal(cov, axis1=-2, axis2=-1)))
 
@@ -237,3 +271,62 @@ def test_covariance_montecarlo_coverage():
     # Variances (diagonal) are the error bars; check those tightly, full block loosely.
     assert np.allclose(np.diag(emp), np.diag(pred), rtol=0.1)
     assert np.allclose(emp, pred, atol=0.15 * float(np.max(np.diag(pred))))
+
+
+@vv.case("ifs-noise-seam", "code-verification")
+@vv.seam("optixstuff", "coronachrome")
+def test_detector_variance_one_lenslet_one_band():
+    """Fails if detector noise is duplicated or count variance becomes a rate.
+
+    Exact algebra: half=0 puts H=1 in one pixel. Source 3+2 e/s, two 4s
+    frames, dark .5 e/pix/s, CIC .25 e/pix/frame, F2=2, read=3 e RMS:
+    mean=44.5 e; variance=2*44.5+2*9=107 e^2. GLS variance is 107.
+    Tolerance is 32 eps for one scalar solve, not a noise realization.
+    """
+    from hwoutils.spectral import Band
+    from optixstuff.detector import Detector
+    from optixstuff.exposure import FramePlan
+    from optixstuff.rates import ElectronRates
+
+    from coronachrome import detector_statistics, extraction_weights
+
+    disperser = LensletDisperser(
+        pitch_m=130e-6,
+        pixsize_m=13e-6,
+        angle_rad=0.0,
+        sky_pitch_arcsec=0.2,
+        lam_ref_nm=660.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([0.0]),
+        psflet_params=jnp.array([0.2]),
+        psflet_ref_nm=660.0,
+        grid_kind="square",
+        n_lenslets=1,
+        psflet_kind="gaussian",
+        detector_shape=(3, 3),
+    )
+    r = IFSRenderer(build_ir(disperser, (Band(650, 670),), sky_grid((5, 5)), half=0))
+    det = Detector(
+        pixel_scale_arcsec=0.1,
+        shape=(3, 3),
+        dark_current_e_per_pixel_s=0.5,
+        clock_induced_charge_e_per_pixel_frame=0.25,
+        read_noise_e_rms=3.0,
+        excess_noise_factor_sq=2.0,
+    )
+    # Two source-band contributions illuminate the same physical pixel.
+    rates = ElectronRates(
+        planet=jnp.zeros((2, 3, 3)).at[0, 1, 1].set(3.0).at[1, 1, 1].set(2.0)
+    )
+    plan = FramePlan(4.0, 2)
+    mean, variance = detector_statistics(r, det, rates, plan)
+    weights = extraction_weights(r, det, rates, plan)
+    assert mean.quantity == "e" and variance.quantity == "e^2"
+    assert mean.data[1, 1] == 44.5 and variance.data[1, 1] == 107.0
+    cov = spectrum_covariance(r, weights=weights, channels=jnp.array([0]))
+    assert jnp.allclose(cov[0, 0, 0], 107.0, rtol=7e-15, atol=0)
+    signal = r.detector_image(jnp.zeros((3, 3)).at[1, 1].set(40.0), "e")
+    fitted = lstsq(r, signal, weights=weights)
+    assert fitted.grid == r.ir.lenslet_grid and fitted.measure == "per_pixel"
+    assert fitted.quantity == "e"
+    assert jnp.allclose(fitted.data[0, 0, 0], 40.0, rtol=7e-15, atol=0)

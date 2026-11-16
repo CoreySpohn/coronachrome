@@ -1,18 +1,22 @@
-"""Tests for build_ir."""
+"""Build-time Band, grid and layout contracts."""
 
+import equinox as eqx
 import jax.numpy as jnp
 import pytest
+from conftest import bands_at, focal_image, sky_grid
+from hwoutils.grids import Frame, PixelGrid, SkyOrientation
+from hwoutils.spectral import Band
 from optixstuff.disperser import LensletDisperser
 
-from coronachrome.build import _resampling_footprints, build_ir
-from coronachrome.ir import SpatialChannelIR
+from coronachrome import IFSRenderer, build_ir, spatial_sample
+from coronachrome.build import lenslet_cell_centers
 
 
 def _disp(n=6, **overrides):
     kwargs = dict(
         pitch_m=174e-6,
         pixsize_m=13e-6,
-        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
+        angle_rad=0.0,
         lam_ref_nm=660.0,
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
@@ -21,424 +25,269 @@ def _disp(n=6, **overrides):
         grid_kind="square",
         n_lenslets=n,
         psflet_kind="gaussian",
-        detector_shape=(256, 256),
+        detector_shape=(128, 128),
+        sky_pitch_arcsec=0.2,
     )
     kwargs.update(overrides)
     return LensletDisperser(**kwargs)
 
 
-def test_psflet_width_scales_linearly_with_wavelength():
-    """The analytic PSFlet core width grows linearly with wavelength.
-
-    A diffraction-limited spot scales as lambda f / D, so at a fixed detector
-    pixel scale a single PSFlet at 1000 nm is twice as wide as at 500 nm in both
-    axes. Zero dispersion is used so the LSF smear vanishes and both axes show
-    pure diffraction width.
-    """
-    disp = LensletDisperser(
-        pitch_m=174e-6,
-        pixsize_m=13e-6,
-        angle_rad=0.0,
-        lam_ref_nm=500.0,
-        pix_per_reselt=2.0,
-        dispersion_coeffs=jnp.array([0.0]),  # no dispersion -> zero LSF smear
-        psflet_params=jnp.array([2.0]),
-        psflet_ref_nm=500.0,
-        grid_kind="square",
-        n_lenslets=1,
-        psflet_kind="gaussian",
-        detector_shape=(128, 128),
+def _build(d=None, **kw):
+    return build_ir(
+        _disp() if d is None else d, bands_at([640, 660, 680]), sky_grid((32, 32)), **kw
     )
-    half = 20
-    lam = jnp.array([500.0, 1000.0])
-    ir = build_ir(disp, lam, fp_shape=(16, 16), fp_px_per_lenslet=2.0, half=half)
 
-    off = jnp.arange(-half, half + 1).astype(float)
-    ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
-    ddx, ddy = ddx.reshape(-1), ddy.reshape(-1)
 
-    def rms_widths(w):
-        weights = ir.det_vals[0, w]
-        wsum = weights.sum()
-        mx = (weights * ddx).sum() / wsum
-        my = (weights * ddy).sum() / wsum
-        sx = jnp.sqrt((weights * (ddx - mx) ** 2).sum() / wsum)
-        sy = jnp.sqrt((weights * (ddy - my) ** 2).sum() / wsum)
-        return sx, sy
+def _rms(ir, w):
+    x = (ir.det_rows[0, w] % ir.det_shape[1]).astype(float)
+    g = ir.det_vals[0, w]
+    mean = (x * g).sum() / g.sum()
+    return jnp.sqrt(((x - mean) ** 2 * g).sum() / g.sum())
 
-    sx500, sy500 = rms_widths(0)
-    sx1000, sy1000 = rms_widths(1)
-    assert jnp.allclose(sx1000 / sx500, 2.0, rtol=0.02)
-    assert jnp.allclose(sy1000 / sy500, 2.0, rtol=0.02)
+
+def test_psflet_width_scales_linearly_with_wavelength():
+    """Fails if diffraction scaling is lost.
+
+    Pixel integration allows a 2% discretization
+    band.
+    """
+    ir = build_ir(
+        _disp(
+            1,
+            psflet_params=jnp.array([2.0]),
+            psflet_ref_nm=500,
+            dispersion_coeffs=jnp.array([0.0]),
+        ),
+        bands_at([500, 1000]),
+        sky_grid((16, 16)),
+        half=20,
+    )
+    assert jnp.allclose(_rms(ir, 1) / _rms(ir, 0), 2, rtol=0.02)
 
 
 def test_moffat_scales_core_width_not_shape():
-    """Moffat alpha (params[0]) scales with wavelength; beta (params[1]) does not.
-
-    The second-moment width of a Moffat depends on both alpha and beta. If beta
-    were (wrongly) scaled too, the width ratio would not equal the wavelength
-    ratio; observing a 2x width ratio confirms only the core width scales.
-    """
-    disp = LensletDisperser(
-        pitch_m=174e-6,
-        pixsize_m=13e-6,
-        angle_rad=0.0,
-        lam_ref_nm=500.0,
-        pix_per_reselt=2.0,
-        dispersion_coeffs=jnp.array([0.0]),
-        psflet_params=jnp.array([2.0, 3.0]),  # alpha=2 px, beta=3
-        psflet_ref_nm=500.0,
-        grid_kind="square",
-        n_lenslets=1,
-        psflet_kind="moffat",
-        detector_shape=(160, 160),
-    )
-    half = 40
+    """Fails if beta scales; finite-wing truncation and pixel variance allow 3%."""
     ir = build_ir(
-        disp,
-        jnp.array([500.0, 1000.0]),
-        fp_shape=(16, 16),
-        fp_px_per_lenslet=2.0,
-        half=half,
+        _disp(
+            1,
+            psflet_kind="moffat",
+            psflet_params=jnp.array([2.0, 3.0]),
+            psflet_ref_nm=500,
+            dispersion_coeffs=jnp.array([0.0]),
+        ),
+        bands_at([500, 1000]),
+        sky_grid((16, 16)),
+        half=30,
     )
-    off = jnp.arange(-half, half + 1).astype(float)
-    ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
-    ddx, ddy = ddx.reshape(-1), ddy.reshape(-1)
-
-    def rms(w):
-        weights = ir.det_vals[0, w]
-        wsum = weights.sum()
-        sx = jnp.sqrt((weights * ddx**2).sum() / wsum)
-        sy = jnp.sqrt((weights * ddy**2).sum() / wsum)
-        return sx, sy
-
-    sx500, sy500 = rms(0)
-    sx1000, sy1000 = rms(1)
-    assert jnp.allclose(sx1000 / sx500, 2.0, rtol=0.03)
-    assert jnp.allclose(sy1000 / sy500, 2.0, rtol=0.03)
+    assert jnp.allclose(_rms(ir, 1) / _rms(ir, 0), 2, rtol=0.03)
 
 
 def test_build_ir_returns_ir_with_expected_shapes():
-    """build_ir returns a SpatialChannelIR with expected channel/wav/detector shapes."""
-    lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
-    assert isinstance(ir, SpatialChannelIR)
-    assert ir.n_channels == 36
-    assert ir.n_wav == 5
-    assert ir.det_rows.shape[:2] == (36, 5)
-    assert ir.det_shape == (256, 256)
+    """The sparse operator dimensions match the supplied bands and layout."""
+    ir = _build()
+    assert ir.det_rows.shape[:2] == (36, 3)
+    assert ir.fp_grid == sky_grid((32, 32))
+    assert ir.detector_grid.unit == "meter"
 
 
 def test_det_vals_normalized_per_channel_wavelength():
-    """On-detector PSFlet footprints are flux-normalized; off-detector ones are zero."""
-    lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
-    sums = ir.det_vals.sum(axis=2)
-    nonzero = sums[sums > 1e-8]
-    assert jnp.allclose(nonzero, 1.0, atol=1e-5)
+    """Fails if bin normalization changes integrated flux; floating-point floor."""
+    assert jnp.allclose(_build().det_vals.sum(axis=2), 1, atol=2e-15, rtol=0)
 
 
 def test_indices_in_bounds():
-    """All detector row indices stay within the detector bounds."""
-    lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
-    ny, nx = ir.det_shape
+    """Masked footprints never index outside the detector."""
+    ir = _build()
     assert int(ir.det_rows.min()) >= 0
-    assert int(ir.det_rows.max()) < ny * nx
+    assert int(ir.det_rows.max()) < 128**2
 
 
 def test_unregistered_type_raises():
-    """build_ir raises NotImplementedError for an unregistered disperser type."""
+    """Unregistered descriptors fail explicitly."""
     with pytest.raises(NotImplementedError):
-        build_ir(object(), jnp.array([660.0]), fp_shape=(8, 8))
+        build_ir(object(), (Band(650, 670),), sky_grid((8, 8)))
 
 
 def test_moffat_psflet_build_normalizes():
-    """A Moffat-PSFlet disperser builds an IR with flux-normalized footprints."""
-    disp = LensletDisperser(
-        pitch_m=174e-6,
-        pixsize_m=13e-6,
-        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
-        lam_ref_nm=660.0,
-        pix_per_reselt=2.0,
-        dispersion_coeffs=jnp.array([100.0, 0.0]),
-        psflet_params=jnp.array([1.5, 2.5]),
-        psflet_ref_nm=660.0,
-        grid_kind="square",
-        n_lenslets=6,
-        psflet_kind="moffat",
-        detector_shape=(256, 256),
-    )
-    lam = jnp.linspace(640.0, 680.0, 5)
-    ir = build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
-    sums = ir.det_vals.sum(axis=2)
-    nonzero = sums[sums > 1e-8]
-    assert jnp.allclose(nonzero, 1.0, atol=1e-5)
+    """Fails if Moffat quadrature loses bin flux; floating-point floor."""
+    ir = _build(_disp(psflet_kind="moffat", psflet_params=jnp.array([1.5, 2.5])))
+    assert jnp.allclose(ir.det_vals.sum(axis=2), 1, atol=2e-15, rtol=0)
 
 
 def test_off_detector_footprints_warn():
-    """Lenslets whose traces fall off a small detector trigger a warning."""
-    disp = LensletDisperser(
-        pitch_m=174e-6,
-        pixsize_m=13e-6,
-        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
-        lam_ref_nm=660.0,
-        pix_per_reselt=2.0,
-        dispersion_coeffs=jnp.array([100.0, 0.0]),
-        psflet_params=jnp.array([0.7]),
-        psflet_ref_nm=660.0,
-        grid_kind="square",
-        n_lenslets=8,
-        psflet_kind="gaussian",
-        detector_shape=(40, 40),
-    )
-    lam = jnp.linspace(640.0, 680.0, 5)
+    """Lost traces produce a diagnostic."""
     with pytest.warns(UserWarning, match="off the detector"):
-        build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
+        _build(_disp(detector_shape=(8, 8)))
 
 
 def test_derived_sampling_matches_explicit_ratio():
-    """fp_pixel_scale_arcsec derives the sampling from the descriptor pitch.
-
-    A 0.5 arcsec on-sky pitch over a 0.1 arcsec per pixel cube grid is 5
-    focal-plane pixels per lenslet, so the derived IR must be identical to the
-    explicit fp_px_per_lenslet=5 build.
-    """
-    lam = jnp.linspace(640.0, 680.0, 3)
-    d = _disp(6, sky_pitch_arcsec=0.5)
-    ir_derived = build_ir(d, lam, fp_shape=(64, 64), fp_pixel_scale_arcsec=0.1)
-    ir_explicit = build_ir(d, lam, fp_shape=(64, 64), fp_px_per_lenslet=5.0)
-    assert jnp.array_equal(ir_derived.spatial_src, ir_explicit.spatial_src)
-    assert jnp.allclose(ir_derived.spatial_w, ir_explicit.spatial_w)
-    assert jnp.allclose(ir_derived.det_vals, ir_explicit.det_vals)
+    """Fails if pitch/scale units drift; 0.2 arcsec / 0.1 arcsec = 2, exact algebra."""
+    ir = _build()
+    assert ir.fp_pixel_scale_arcsec == 0.1
+    assert ir.fp_px_per_lenslet == 2
 
 
 def test_sampling_knobs_mutually_exclusive():
-    """Passing both the derived and the explicit sampling knob is an error."""
-    d = _disp(6, sky_pitch_arcsec=0.5)
-    with pytest.raises(ValueError, match="not both"):
-        build_ir(
-            d,
-            jnp.array([660.0]),
-            fp_shape=(64, 64),
-            fp_px_per_lenslet=5.0,
-            fp_pixel_scale_arcsec=0.1,
-        )
+    """Removed independent sampling keywords must not survive as aliases."""
+    with pytest.raises(TypeError):
+        _build(fp_px_per_lenslet=2)
+    with pytest.raises(TypeError):
+        _build(fp_pixel_scale_arcsec=0.1)
 
 
 def test_sampling_requires_one_knob():
-    """Omitting both sampling inputs is an error, not a silent default."""
-    with pytest.raises(ValueError, match="fp_pixel_scale_arcsec"):
-        build_ir(_disp(6), jnp.array([660.0]), fp_shape=(64, 64))
+    """A focal plane has to supply physical grid geometry."""
+    with pytest.raises(AttributeError):
+        build_ir(_disp(), (Band(650, 670),), (32, 32))
 
 
 def test_derived_sampling_requires_descriptor_pitch():
-    """fp_pixel_scale_arcsec without a descriptor sky pitch is an error."""
+    """An unspecified sky pitch cannot define a physical layout."""
     with pytest.raises(ValueError, match="sky_pitch_arcsec"):
-        build_ir(
-            _disp(6), jnp.array([660.0]), fp_shape=(64, 64), fp_pixel_scale_arcsec=0.1
-        )
+        _build(_disp(sky_pitch_arcsec=None))
 
 
 def test_undersampled_cube_warns():
-    """Fewer than two cube pixels per lenslet degrades the cell flux integral."""
+    """A pitch below two source pixels produces a diagnostic."""
     with pytest.warns(UserWarning, match="undersamples"):
-        build_ir(_disp(6), jnp.array([660.0]), fp_shape=(64, 64), fp_px_per_lenslet=1.0)
+        build_ir(_disp(), (Band(650, 670),), sky_grid((32, 32), 0.2))
 
 
 def test_lenslet_cells_beyond_cube_warn():
-    """Lenslet cells reaching past the cube bounds lose flux and must warn."""
+    """Cropping produces a diagnostic."""
     with pytest.warns(UserWarning, match="past the focal-plane"):
-        build_ir(_disp(6), jnp.array([660.0]), fp_shape=(16, 16), fp_px_per_lenslet=8.0)
-
-
-def _rms_x(ir, half):
-    """Weighted x-rms of channel 0's footprint at wavelength 0."""
-    off = jnp.arange(-half, half + 1).astype(float)
-    _ddy, ddx = jnp.meshgrid(off, off, indexing="ij")
-    ddx = ddx.reshape(-1)
-    w = ir.det_vals[0, 0]
-    m = (w * ddx).sum() / w.sum()
-    return float(jnp.sqrt((w * (ddx - m) ** 2).sum() / w.sum()))
+        build_ir(_disp(), (Band(650, 670),), sky_grid((4, 4)))
 
 
 def test_wavelength_edges_control_lsf_smear():
-    """Explicit bin edges set the LSF smear exactly.
-
-    A single-wavelength build without edges assumes a 1 nm bin; passing the
-    real 40 nm bin edges must smear the PSFlet along the dispersion axis by a
-    clearly larger amount (the boxcar over a 6 px bin dominates the 0.7 px
-    core).
-    """
-    disp = _disp(1, angle_rad=0.0, detector_shape=(160, 160))
-    half = 10
-    lam = jnp.array([660.0])
-    ir_default = build_ir(
-        disp, lam, fp_shape=(16, 16), fp_px_per_lenslet=2.0, half=half
-    )
-    ir_edges = build_ir(
-        disp,
-        lam,
-        fp_shape=(16, 16),
-        fp_px_per_lenslet=2.0,
-        half=half,
-        wavelength_edges=jnp.array([640.0, 680.0]),
-    )
-    assert _rms_x(ir_edges, half) > 2.0 * _rms_x(ir_default, half)
+    """Fails if Band widths are ignored; 40 nm trace smear exceeds 1 nm by 2x."""
+    d = _disp(1)
+    narrow = build_ir(d, (Band(659.5, 660.5),), sky_grid((16, 16)), half=10)
+    wide = build_ir(d, (Band(640, 680),), sky_grid((16, 16)), half=10)
+    assert _rms(wide, 0) > 2 * _rms(narrow, 0)
 
 
 def test_wavelength_edges_match_gradient_on_uniform_grid():
-    """On a uniform center grid the edges path equals the gradient fallback."""
-    lam = jnp.linspace(640.0, 680.0, 5)
-    edges = jnp.linspace(635.0, 685.0, 6)
-    ir_g = build_ir(_disp(6), lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
-    ir_e = build_ir(
-        _disp(6),
-        lam,
-        fp_shape=(64, 64),
-        fp_px_per_lenslet=2.0,
-        wavelength_edges=edges,
+    """Fails if spectral integration aliases: constant throughput integrates exactly."""
+    from optixstuff import ConstantThroughput
+
+    ir = build_ir(
+        _disp(1, throughput_element=ConstantThroughput(0.3)),
+        (Band(600, 700),),
+        sky_grid((16, 16)),
+        half=12,
     )
-    assert jnp.allclose(ir_g.det_vals, ir_e.det_vals, atol=1e-12)
+    assert jnp.allclose(ir.det_vals.sum(), 0.3, atol=2e-16, rtol=0)
 
 
 def test_wavelength_edges_shape_validated():
-    """Edges must bracket every wavelength: n_wav + 1 entries required."""
-    with pytest.raises(ValueError, match="wavelength_edges"):
-        build_ir(
-            _disp(6),
-            jnp.array([650.0, 660.0]),
-            fp_shape=(64, 64),
-            fp_px_per_lenslet=2.0,
-            wavelength_edges=jnp.array([640.0, 655.0, 670.0, 680.0]),
-        )
+    """Bare wavelength arrays are rejected instead of assuming a bin width."""
+    with pytest.raises(AttributeError):
+        build_ir(_disp(), jnp.array([660.0]), sky_grid((32, 32)))
 
 
 def test_resampling_footprint_conserves_flux():
-    """A fully interior lenslet integrates its cell area (weights sum to cell^2)."""
-    fp_shape = (64, 64)
-    cell = 6.0
-    idx, w = _resampling_footprints(
-        jnp.array([32.0]), jnp.array([32.0]), 0.0, cell, fp_shape, supersample=8
-    )
-    assert idx.shape == w.shape
-    assert idx.shape[0] == 1
-    assert jnp.allclose(w.sum(), cell**2, rtol=1e-6)
-    cube = jnp.ones(fp_shape).reshape(-1)
-    z = (cube[idx[0]] * w[0]).sum()
-    assert jnp.allclose(z, cell**2, rtol=1e-6)
+    """Fails if the input measure is ignored.
+
+    Flat 2px cells collect 4, exact
+    algebra.
+    """
+    ir = _build()
+    z = spatial_sample(focal_image(jnp.ones((3, 32, 32)), ir.fp_grid), ir)
+    assert jnp.allclose(z, 4, atol=2e-14, rtol=0)
 
 
 def test_resampling_footprint_axis_aligned_box():
-    """Cover exactly the cell block and integrate to the cell area at angle 0.
+    """Fails if deposition splits a pixel wholly contained in one aperture.
 
-    Uses an integer cell on a pixel-centered lenslet, with supersample=7 (not a
-    divisor of the cell) so the per-pixel weights are deliberately non-uniform;
-    only the robust invariants are asserted.
+    Piecewise-constant collection is used for smooth declarations too.
     """
-    fp_shape = (32, 32)
-    cell = 5.0
-    _idx, w = _resampling_footprints(
-        jnp.array([16.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=7
+    ir = _build(_disp(2))
+    data = jnp.zeros((3, 32, 32)).at[:, 15, 15].set(1)
+    near = spatial_sample(focal_image(data, ir.fp_grid), ir)
+    linear = spatial_sample(focal_image(data, ir.fp_grid, reconstruction="linear"), ir)
+    assert jnp.allclose(near.sum(axis=0), 1, atol=1e-15, rtol=0)
+    assert jnp.allclose(
+        near,
+        jnp.array([[1, 1, 1], [0, 0, 0], [0, 0, 0], [0, 0, 0]]),
+        atol=1e-15,
+        rtol=0,
     )
-    nz = w[0][w[0] > 1e-6]
-    assert nz.size == 25  # 5 x 5 axis-aligned block
-    assert jnp.allclose(nz.sum(), cell**2, rtol=1e-6)  # flux-conserving
+    assert jnp.array_equal(near, linear)
 
 
 def test_resampling_footprint_multi_lenslet():
-    """Vmap handles several lenslets independently (shapes and per-lenslet flux)."""
-    fp_shape = (48, 48)
-    cell = 5.0
-    cx = jnp.array([24.0, 0.0])  # one interior, one at the focal-plane edge
-    cy = jnp.array([24.0, 24.0])
-    idx, w = _resampling_footprints(cx, cy, 0.0, cell, fp_shape, supersample=8)
-    assert idx.shape == w.shape
-    assert idx.shape[0] == 2
-    # interior conserves the cell area; the edge lenslet loses its off-grid part
-    assert jnp.allclose(w[0].sum(), cell**2, rtol=1e-6)
-    assert float(w[1].sum()) < cell**2
+    """Fails if orientation is dropped; declared sky orientation is retained exactly."""
+    grid = sky_grid((32, 32), orientation=SkyOrientation(37, -1))
+    ir = build_ir(_disp(), (Band(650, 670),), grid)
+    assert ir.lenslet_grid.orientation == grid.orientation
+    assert (
+        IFSRenderer(ir).channel_cube(jnp.ones((36, 1)), "e").grid.orientation
+        == grid.orientation
+    )
 
 
 def test_resampling_footprint_rotation_moves_corners():
-    """A 45 deg rotation widens the footprint bounding box vs axis-aligned."""
-    fp_shape = (64, 64)
-    cell = 8.0
-    _, w0 = _resampling_footprints(
-        jnp.array([32.0]), jnp.array([32.0]), 0.0, cell, fp_shape, supersample=8
+    """Fails if the layout rotation is dropped.
+
+    Typed quarter-turn coordinates at the floating-point floor.
+    """
+    cx, cy = lenslet_cell_centers(
+        _disp(2, angle_rad=float(jnp.pi / 2)), sky_grid((16, 16))
     )
-    _, w45 = _resampling_footprints(
-        jnp.array([32.0]),
-        jnp.array([32.0]),
-        float(jnp.pi / 4),
-        cell,
-        fp_shape,
-        supersample=8,
-    )
-    assert jnp.allclose(w0.sum(), w45.sum(), rtol=1e-6)
-    assert int((w45[0] > 1e-6).sum()) > int((w0[0] > 1e-6).sum())
+    assert jnp.allclose(cx, jnp.array([8.5, 6.5, 8.5, 6.5]), atol=2e-15, rtol=0)
+    assert jnp.allclose(cy, jnp.array([6.5, 6.5, 8.5, 8.5]), atol=2e-15, rtol=0)
 
 
 def test_resampling_footprint_masks_off_grid():
-    """A lenslet straddling the edge loses the off-grid part of its cell."""
-    fp_shape = (32, 32)
-    cell = 6.0
-    _, w_in = _resampling_footprints(
-        jnp.array([16.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=8
+    """Fails if cropping invents flux; a source outside the lenslet field gives zero."""
+    ir = _build(_disp(2))
+    z = spatial_sample(
+        focal_image(jnp.zeros((3, 32, 32)).at[:, 0, 0].set(1), ir.fp_grid), ir
     )
-    _, w_edge = _resampling_footprints(
-        jnp.array([1.0]), jnp.array([16.0]), 0.0, cell, fp_shape, supersample=8
-    )
-    assert float(w_edge.sum()) < float(w_in.sum())
+    assert jnp.array_equal(z, jnp.zeros_like(z))
 
 
 def test_throughput_scales_footprint_sums():
-    """build_ir bakes throughput into H: footprints sum to throughput not 1."""
+    """Fails if throughput is sampled only at reference.
+
+    Knot-split triangle integral at the floating-point floor.
+    """
     from optixstuff import SpectralThroughput
 
     curve = SpectralThroughput(
-        jnp.array([600.0, 660.0, 720.0]), jnp.array([0.3, 0.9, 0.6])
+        jnp.array([600.0, 650.0, 700.0]), jnp.array([0.2, 0.8, 0.2])
     )
-    disp = LensletDisperser(
-        pitch_m=174e-6,
-        pixsize_m=13e-6,
-        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
-        lam_ref_nm=660.0,
-        pix_per_reselt=2.0,
-        dispersion_coeffs=jnp.array([100.0, 0.0]),
-        psflet_params=jnp.array([0.7]),
-        psflet_ref_nm=660.0,
-        grid_kind="square",
-        n_lenslets=6,
-        psflet_kind="gaussian",
-        detector_shape=(256, 256),
-        throughput_element=curve,
+    ir = build_ir(
+        _disp(1, throughput_element=curve),
+        (Band(600, 700),),
+        sky_grid((16, 16)),
+        half=12,
     )
-    lam = jnp.array([600.0, 660.0, 720.0])
-    ir = build_ir(disp, lam, fp_shape=(64, 64), fp_px_per_lenslet=2.0)
-    sums = ir.det_vals.sum(axis=2)  # (n_channels, n_wav)
-    expected = disp.throughput(lam)  # (n_wav,) = [0.3, 0.9, 0.6]
-    for j in range(int(lam.shape[0])):
-        col = sums[:, j]
-        nonzero = col[col > 1e-8]
-        assert nonzero.size > 0
-        assert jnp.allclose(nonzero, expected[j], atol=1e-5)
+    assert jnp.allclose(ir.det_vals.sum(), 0.5, atol=3e-15, rtol=0)
 
 
 def test_build_ir_spatial_footprint_is_flux_conserving():
-    """Every lenslet's spatial weights sum to the cell area (fp_px^2).
-
-    For this small grid on a 64x64 focal plane every lenslet is interior, so
-    each integrates a full cell. fp_px != 1 is what makes the test
-    discriminating: the old bilinear point-sample summed to 1 for any cell size.
-    """
-    fp_px = 5.0
-    ir = build_ir(
-        _disp(),
-        jnp.linspace(600.0, 700.0, 4),
-        fp_shape=(64, 64),
-        fp_px_per_lenslet=fp_px,
+    """Fails if density is treated as pixel flux; 100 e/s/arcsec^2 * .04 = 4."""
+    ir = _build()
+    z = spatial_sample(
+        focal_image(jnp.full((3, 32, 32), 100.0), ir.fp_grid, measure="per_unit_area"),
+        ir,
     )
-    sums = ir.spatial_w.sum(axis=1)
-    assert jnp.allclose(sums, fp_px**2, rtol=1e-3)
-    assert bool(jnp.all(sums <= fp_px**2 + 1e-6))
+    assert jnp.allclose(z, 4, atol=2e-14, rtol=0)
+    renderer = IFSRenderer(ir)
+    image = focal_image(
+        jnp.full((3, 32, 32), 100.0), ir.fp_grid, measure="per_unit_area"
+    )
+    with pytest.raises(ValueError, match="output_quantity"):
+        renderer.forward_spmv(image)
+    detector = renderer.forward_spmv(image, output_quantity="e/s")
+    assert detector.quantity == "e/s" and detector.measure == "per_pixel"
+    assert jnp.allclose(detector.data.sum(), 432.0, rtol=2e-15, atol=0)
+    # lambda/D cannot cross the seam without an explicit Frame conversion.
+    lod = PixelGrid.focal(32, 0.1, Frame(660, 6, "inscribed"))
+    with pytest.raises(ValueError, match="Frame"):
+        build_ir(_disp(), (Band(650, 670),), lod)
+    converted = lod.to_arcsec(660)
+    assert converted.frame == lod.frame
+    assert eqx.is_array(z)

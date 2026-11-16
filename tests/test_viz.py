@@ -7,6 +7,7 @@ import jax.numpy as jnp
 import matplotlib
 import numpy as np
 import pytest
+from conftest import bands_at, sky_grid
 from optixstuff.disperser import LensletDisperser
 
 matplotlib.use("Agg")
@@ -31,12 +32,14 @@ FP_SHAPE = (40, 48)  # (ny, nx), deliberately non-square
 DET_SHAPE = (96, 128)
 LAM = jnp.array([600.0, 630.0, 660.0, 690.0, 720.0])
 FP_PX = 5.0
+FP_GRID = sky_grid(FP_SHAPE, 0.2 / FP_PX)
 
 
 def _disperser(**overrides):
     """A LensletDisperser with test defaults."""
     kwargs = dict(
         pitch_m=174e-6,
+        sky_pitch_arcsec=0.2,
         pixsize_m=13e-6,
         angle_rad=float(np.arctan(0.5)),
         lam_ref_nm=660.0,
@@ -57,7 +60,9 @@ def _disperser(**overrides):
 def setup():
     """A small square-grid disperser and its IR on non-square planes."""
     disperser = _disperser()
-    ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+    ir = build_ir(
+        disperser, fp_grid=sky_grid(FP_SHAPE, 0.2 / (FP_PX)), bands=bands_at(LAM)
+    )
     return disperser, ir
 
 
@@ -136,9 +141,7 @@ def _calls(setup):
     cov = np.eye(LAM.shape[0]) + 0.3 * np.eye(LAM.shape[0], k=1)
     cov = cov + cov.T
     return [
-        lambda ax: viz.plot_lenslet_cells(
-            disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, channels=(12,), ax=ax
-        ),
+        lambda ax: viz.plot_lenslet_cells(disperser, FP_GRID, channels=(12,), ax=ax),
         lambda ax: viz.plot_traces(ir, disperser, LAM, channels=(12, 17), ax=ax),
         lambda ax: viz.plot_channel_covariance(cov, wavelengths_nm=LAM, ax=ax),
     ]
@@ -176,47 +179,39 @@ def test_creates_its_own_figure_when_no_ax(setup, which):
 # -- entrance plane: cells and origins ---------------------------------------
 
 
-def test_lenslet_grid_origin_is_drawn_at_half_the_cube_shape(setup):
-    """The grid origin sits at (nx/2, ny/2); the optical center where stated."""
+def test_lenslet_grid_origin_is_drawn_at_declared_cube_center(setup):
+    """The declared grid centre and the supplied optical centre are drawn."""
     disperser, _ = setup
     center = (21.25, 17.5)
-    result = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, optical_center_px=center
-    )
+    result = viz.plot_lenslet_cells(disperser, FP_GRID, optical_center_px=center)
     grid = _by_label(result.artists["lines"], "lenslet-grid origin")
     optical = _by_label(result.artists["lines"], "optical center")
     ny, nx = FP_SHAPE
-    assert np.allclose(np.ravel(grid.get_data()), [nx / 2.0, ny / 2.0])
+    assert np.allclose(np.ravel(grid.get_data()), [(nx - 1) / 2.0, (ny - 1) / 2.0])
     assert np.allclose(np.ravel(optical.get_data()), center)
 
 
 def test_no_optical_center_is_invented(setup):
     """Without optical_center_px no optical center is drawn."""
     disperser, _ = setup
-    result = viz.plot_lenslet_cells(disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+    result = viz.plot_lenslet_cells(disperser, FP_GRID)
     labels = [a.get_label() for a in result.artists["lines"]]
     assert labels == ["lenslet-grid origin"]
 
 
 def test_drawn_cells_are_the_cells_the_operator_integrates(setup):
     """Each outlined cell has the area and centroid of its spatial footprint."""
-    disperser, ir = setup
+    disperser, _ir = setup
     channels = (0, 7, 12, 24)
-    result = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, channels=channels
-    )
-    nx = FP_SHAPE[1]
+    result = viz.plot_lenslet_cells(disperser, FP_GRID, channels=channels)
     for ch, patch in zip(channels, result.artists["ellipse"], strict=True):
         xy = patch.get_xy()[:4]
         x, y = xy[:, 0], xy[:, 1]
         area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
-        src = np.asarray(ir.spatial_src[ch])
-        w = np.asarray(ir.spatial_w[ch])
-        sy, sx = np.divmod(src, nx)
-        assert area == pytest.approx(float(w.sum()), rel=1e-6)
+        assert area == pytest.approx(FP_PX**2, rel=1e-14)
+        cx, cy = lenslet_cell_centers(disperser, FP_GRID)
         assert xy.mean(axis=0) == pytest.approx(
-            [float((w * sx).sum() / w.sum()), float((w * sy).sum() / w.sum())],
-            abs=0.15,  # the operator bins supersampled subpoints to pixels
+            [float(cx[ch]), float(cy[ch])], abs=1e-14
         )
         edge = xy[1] - xy[0]
         assert np.arctan2(edge[1], edge[0]) == pytest.approx(disperser.angle_rad)
@@ -225,10 +220,10 @@ def test_drawn_cells_are_the_cells_the_operator_integrates(setup):
 def test_every_cell_outline_is_drawn_in_channel_order(setup):
     """One outline per channel, centered on the library's cell centers."""
     disperser, ir = setup
-    result = viz.plot_lenslet_cells(disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+    result = viz.plot_lenslet_cells(disperser, FP_GRID)
     paths = result.artists["collection"].get_paths()
     assert len(paths) == ir.n_channels
-    cx, cy = lenslet_cell_centers(disperser, FP_SHAPE, FP_PX)
+    cx, cy = lenslet_cell_centers(disperser, FP_GRID)
     centers = np.array([p.vertices[:4].mean(axis=0) for p in paths])
     assert np.allclose(centers, np.stack([cx, cy], axis=1))
 
@@ -236,13 +231,11 @@ def test_every_cell_outline_is_drawn_in_channel_order(setup):
 def test_bare_centers_door_matches_the_disperser_door(setup):
     """Bare cell centers draw the same cells as the descriptor."""
     disperser, _ = setup
-    cx, cy = lenslet_cell_centers(disperser, FP_SHAPE, FP_PX)
-    a = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, channels=(3,)
-    )
+    cx, cy = lenslet_cell_centers(disperser, FP_GRID)
+    a = viz.plot_lenslet_cells(disperser, FP_GRID, channels=(3,))
     b = viz.plot_lenslet_cells(
         np.stack([cx, cy], axis=1),
-        FP_SHAPE,
+        FP_GRID,
         fp_px_per_lenslet=FP_PX,
         angle_rad=disperser.angle_rad,
         channels=(3,),
@@ -251,19 +244,15 @@ def test_bare_centers_door_matches_the_disperser_door(setup):
         a.artists["ellipse"][0].get_xy(), b.artists["ellipse"][0].get_xy()
     )
     with pytest.raises(ValueError, match="angle_rad"):
-        viz.plot_lenslet_cells(np.stack([cx, cy], axis=1), FP_SHAPE)
+        viz.plot_lenslet_cells(np.stack([cx, cy], axis=1), FP_GRID)
 
 
 def test_cube_image_is_band_summed_or_one_plane(setup):
     """A cube is band-summed by default, or one plane is drawn."""
     disperser, _ = setup
     cube = np.ones((3, *FP_SHAPE)) * np.array([1.0, 2.0, 4.0])[:, None, None]
-    summed = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=cube
-    )
-    plane = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=cube, plane=2
-    )
+    summed = viz.plot_lenslet_cells(disperser, FP_GRID, image=cube)
+    plane = viz.plot_lenslet_cells(disperser, FP_GRID, image=cube, plane=2)
     assert np.allclose(summed.artists["image"].get_array(), 7.0)
     assert np.allclose(plane.artists["image"].get_array(), 4.0)
 
@@ -271,13 +260,13 @@ def test_cube_image_is_band_summed_or_one_plane(setup):
 # -- detector plane: traces, centroids, origin --------------------------------
 
 
-def test_trace_origin_is_drawn_at_half_the_detector_shape(setup):
-    """The trace origin sits at (nx/2, ny/2) of the detector."""
+def test_trace_origin_is_drawn_at_geometric_detector_center(setup):
+    """The trace origin sits at ((nx-1)/2, (ny-1)/2)."""
     disperser, ir = setup
     result = viz.plot_traces(ir, disperser, LAM, channels=(12,))
     origin = _by_label(result.artists["lines"], "detector trace origin")
     ny, nx = DET_SHAPE
-    assert np.allclose(np.ravel(origin.get_data()), [nx / 2.0, ny / 2.0])
+    assert np.allclose(np.ravel(origin.get_data()), [(nx - 1) / 2.0, (ny - 1) / 2.0])
 
 
 def test_drawn_centroids_equal_the_library_centroids(setup):
@@ -300,10 +289,10 @@ def test_centroids_follow_the_documented_dispersion_law(setup):
     result = viz.plot_traces(ir, disperser, LAM, channels=(center,))
     ny, nx = DET_SHAPE
     lam = np.asarray(LAM)
-    expected_x = nx / 2.0 + 140.0 * np.log(lam / 660.0)
+    expected_x = (nx - 1) / 2.0 + 140.0 * np.log(lam / 660.0)
     offsets = result.artists["scatter"].get_offsets()
     assert np.allclose(offsets[:, 0], expected_x)
-    assert np.allclose(offsets[:, 1], ny / 2.0)
+    assert np.allclose(offsets[:, 1], (ny - 1) / 2.0)
     assert np.all(np.diff(offsets[:, 0]) > 0)  # longer wavelength, larger x
 
 
@@ -313,9 +302,18 @@ def test_template_correction_moves_markers_off_the_geometric_trace():
     shift = np.zeros((1, LAM.shape[0], 2))
     shift[0, :, 1] = 0.75  # +0.75 px along y at every wavelength
     pack = analytic_psflet_pack(
-        "gaussian", jnp.array([1.0]), LAM, psflet_ref_nm=660.0, centroids=shift
+        "gaussian",
+        jnp.array([1.0]),
+        LAM.at[0].add(-1e-3).at[-1].add(1e-3),
+        psflet_ref_nm=660.0,
+        centroids=shift,
     )
-    ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX, psflet_pack=pack)
+    ir = build_ir(
+        disperser,
+        psflet_pack=pack,
+        fp_grid=sky_grid(FP_SHAPE, 0.2 / (FP_PX)),
+        bands=bands_at(LAM),
+    )
     result = viz.plot_traces(ir, disperser, LAM, channels=(12,), psflet_pack=pack)
     trace = _by_label(result.artists["lines"], "lenslet 12 trace")
     markers = result.artists["scatter"].get_offsets()
@@ -419,7 +417,9 @@ def test_scan_box_on_a_clipped_trace_stays_on_the_detector():
     det_shape = (60, 80)
     disperser = _disperser(detector_shape=det_shape)
     with pytest.warns(UserWarning, match="fell off the detector"):
-        ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+        ir = build_ir(
+            disperser, fp_grid=sky_grid(FP_SHAPE, 0.2 / (FP_PX)), bands=bands_at(LAM)
+        )
     ch, half = 4, 3
     result = viz.plot_traces(ir, disperser, LAM, channels=(ch,), scan_index=0)
     box = _by_label(result.artists["ellipse"], "scan footprint")
@@ -497,7 +497,9 @@ def test_footprint_box_keeps_only_the_on_detector_part():
     det_shape = (60, 80)
     disperser = _disperser(detector_shape=det_shape)
     with pytest.warns(UserWarning, match="fell off the detector"):
-        ir = build_ir(disperser, LAM, FP_SHAPE, fp_px_per_lenslet=FP_PX)
+        ir = build_ir(
+            disperser, fp_grid=sky_grid(FP_SHAPE, 0.2 / (FP_PX)), bands=bands_at(LAM)
+        )
     assert viz.footprint_box(ir, 4, 0) is None  # 600 nm: wholly off
     x0, _, w, _ = viz.footprint_box(ir, 4, 1)  # 630 nm: cut at the left edge
     assert x0 == -0.5
@@ -524,9 +526,7 @@ def test_log_stretch_spans_the_stated_decades(setup, decades):
     """The returned norm spans ``decades`` below the peak (default 4 and 3)."""
     disperser, ir = setup
     kw = {} if decades is None else {"decades": decades}
-    cells = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=_scene(), **kw
-    )
+    cells = viz.plot_lenslet_cells(disperser, FP_GRID, image=_scene(), **kw)
     traces = viz.plot_traces(ir, disperser, LAM, channels=(12,), **kw)
     assert _decades(cells) == pytest.approx(4 if decades is None else decades)
     assert _decades(traces) == pytest.approx(3 if decades is None else decades)
@@ -555,9 +555,7 @@ def test_cmap_is_applied_and_defaults_are_kept(setup):
 
     disperser, ir = setup
     traces = viz.plot_traces(ir, disperser, LAM, channels=(12,), cmap="magma")
-    cells = viz.plot_lenslet_cells(
-        disperser, FP_SHAPE, fp_px_per_lenslet=FP_PX, image=_scene(), cmap="magma"
-    )
+    cells = viz.plot_lenslet_cells(disperser, FP_GRID, image=_scene(), cmap="magma")
     assert traces.artists["image"].get_cmap().name == "magma"
     assert cells.artists["image"].get_cmap().name == "magma"
 
@@ -640,8 +638,7 @@ def _cells(setup, **kw):
     disperser, _ = setup
     return viz.plot_lenslet_cells(
         disperser,
-        FP_SHAPE,
-        fp_px_per_lenslet=FP_PX,
+        FP_GRID,
         image=_scene(),
         channels=(12, 17),
         optical_center_px=(23.5, 19.5),

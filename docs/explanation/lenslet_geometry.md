@@ -35,6 +35,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import HTML
 from optixstuff.disperser import LensletDisperser
+from hwoutils.grids import PixelGrid
+from coronachrome import channel_centers
 
 import eyepiece as ep
 from coronachrome import IFSRenderer, build_ir, spectral_grid, spectrum_covariance
@@ -45,6 +47,7 @@ hwostyle.use("dark")
 
 disperser = LensletDisperser(
     pitch_m=174e-6,
+    sky_pitch_arcsec=0.03,
     pixsize_m=13e-6,
     angle_rad=float(np.arctan(0.5)),
     lam_ref_nm=660.0,
@@ -57,10 +60,12 @@ disperser = LensletDisperser(
     psflet_kind="moffat",
     detector_shape=(120, 120),
 )
-lam, edges = spectral_grid(50.0, 600.0, 720.0)
+bands = spectral_grid(50.0, 600.0, 720.0)
+lam = channel_centers(bands)
 fp_shape = (64, 64)
+fp_grid = PixelGrid.regular(fp_shape, 0.005, "arcsec")
 ir = build_ir(
-    disperser, lam, fp_shape, fp_px_per_lenslet=6.0, wavelength_edges=edges, half=4
+    disperser, bands, fp_grid, half=4
 )
 
 # Two lenslets that are neighbors on the grid: lenslet-index (0, 0) and (1, 0).
@@ -68,10 +73,8 @@ a, b = 24, 31
 styles = ep.SourceStyles([f"lenslet {a}", f"lenslet {b}"])
 ```
 
-The build warns that two (lenslet, wavelength) footprints fall entirely off
-the detector: the shortest-wavelength bin of lenslet 6 and the
-longest-wavelength bin of lenslet 42, at opposite edges. The clipping section
-below returns to the detector edge.
+The build warns when cells or node footprints reach outside the available
+arrays. Clipped detector footprints remain normalized on the surviving pixels.
 
 ## Collection cells on the entrance plane
 
@@ -80,11 +83,13 @@ side and rotated by the lenslet angle. Three reference points are easy to
 conflate and are kept separate. The **optical center** belongs to whoever made
 the cube; here the scene is centered on the geometric array center,
 $((n_x - 1)/2, (n_y - 1)/2) = (31.5, 31.5)$. The **lenslet-grid origin** is
-where lenslet-index $(0, 0)$ sits, which coronachrome fixes at
-$(n_x/2, n_y/2) = (32, 32)$ in cube pixel-center coordinates. For an even cube
-the two differ by half a pixel on each axis, which the zoomed panel shows. The
-third point, the detector trace origin, lives on the detector and appears in
-the next section.
+where lenslet-index $(0, 0)$ sits, and follows the cube's declared PixelGrid
+centre, here also `(31.5, 31.5)`. The detector trace origin is its geometric
+array centre, `(59.5, 59.5)`. `LensletLayout` names the separate lenslet index
+convention: `geometric` subtracts `(n-1)/2`, while `central_index` subtracts
+`n//2`. For square arrays those agree for odd n; even n shifts by half a pitch.
+For hex arrays geometric centring also removes the mean odd-row x stagger.
+Hex outputs use an axial parallelogram PixelGrid with unused pixels zero.
 
 ```{code-cell} ipython3
 yy, xx = np.mgrid[: fp_shape[0], : fp_shape[1]]
@@ -98,8 +103,7 @@ fig, axes = plt.subplots(1, 2, figsize=(10, 4.4), layout="constrained")
 for ax, window in zip(axes, (None, (27.0, 37.0, 27.0, 37.0))):
     viz.plot_lenslet_cells(
         disperser,
-        fp_shape,
-        fp_px_per_lenslet=6.0,
+        fp_grid,
         image=scene,
         channels=(a, b),
         optical_center_px=optical_center,
@@ -108,7 +112,7 @@ for ax, window in zip(axes, (None, (27.0, 37.0, 27.0, 37.0))):
         colorbar=ax is axes[1],
         ax=ax,
     )
-axes[1].set_title("zoom: two origins half a pixel apart")
+axes[1].set_title("zoom: declared geometric centre")
 plt.show()
 ```
 
@@ -120,7 +124,7 @@ runs along detector $x$: the offset is a polynomial in
 $\log(\lambda / \lambda_\mathrm{ref})$, so with a positive leading coefficient
 longer wavelengths sit at larger $x$, and one lenslet's PSFlets across the band
 form its **trace**. The **detector trace origin** (hollow circle) is where the
-lenslet-grid origin lands at zero dispersion offset, $(n_x/2, n_y/2)$ of the
+lenslet-grid origin lands at zero dispersion offset,  $((n_x-1)/2, (n_y-1)/2)$ of the
 detector. Here the dispersion polynomial has no constant term, so it coincides
 with the 660 nm centroid of lenslet $(0, 0)$.
 
@@ -320,3 +324,8 @@ viz.plot_channel_covariance(
 )
 plt.show()
 ```
+
+Hex layouts retain square collection cells at staggered centres, integrated by
+the same sparse overlap matrix. The square cells overlap; this is not a physical
+hexagonal-aperture model. Extracted hex Images pack the same centres onto an
+axial grid with unused pixels zero. Packing does not redefine collection area.

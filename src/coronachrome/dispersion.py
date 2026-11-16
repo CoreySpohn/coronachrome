@@ -33,6 +33,6 @@ def lenslet_centroids(positions, scale, angle_rad, dispersion_offsets, det_shape
     gy = scale * (sin_a * ii + cos_a * jj)
     ny, nx = det_shape
     disp = jnp.asarray(dispersion_offsets, dtype=float)
-    xc = (nx / 2.0 + disp)[None, :] + gx[:, None]
-    yc = (ny / 2.0 + gy)[:, None] * jnp.ones_like(disp)[None, :]
+    xc = ((nx - 1) / 2.0 + disp)[None, :] + gx[:, None]
+    yc = ((ny - 1) / 2.0 + gy)[:, None] * jnp.ones_like(disp)[None, :]
     return xc, yc

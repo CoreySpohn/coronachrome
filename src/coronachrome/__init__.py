@@ -3,6 +3,8 @@
 from coronachrome.build import build_ir
 from coronachrome.extract import (
     amplitude_basis,
+    detector_statistics,
+    extraction_weights,
     lstsq,
     marginal_covariance,
     matched_filter,
@@ -10,6 +12,7 @@ from coronachrome.extract import (
     spectrum_errorbars,
     unmodeled_covariance,
 )
+from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.render import IFSRenderer, spatial_sample
 from coronachrome.spectral import (
@@ -29,6 +32,7 @@ from coronachrome.templates import (
 
 __all__ = [
     "IFSRenderer",
+    "LensletLayout",
     "PsfletPack",
     "SpatialChannelIR",
     "amplitude_basis",
@@ -36,6 +40,8 @@ __all__ = [
     "build_ir",
     "channel_centers",
     "channel_edges",
+    "detector_statistics",
+    "extraction_weights",
     "load_psflet_pack",
     "lstsq",
     "marginal_covariance",
