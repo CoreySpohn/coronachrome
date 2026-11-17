@@ -36,30 +36,15 @@ from coronachrome.ir import SpatialChannelIR
 from coronachrome.viz._require import eyepiece
 
 
-def _neutral(level):
-    """A tone ``level`` of the way from the axes facecolor to the text color.
-
-    Resolved from the active rcParams at call time, so reference marks invert
-    with the style mode instead of freezing one gray for both.
-    """
-    import matplotlib as mpl
-    from matplotlib.colors import to_rgb
-
-    face = np.asarray(to_rgb(mpl.rcParams["axes.facecolor"]))
-    text = np.asarray(to_rgb(mpl.rcParams["text.color"]))
-    return tuple(face + level * (text - face))
-
-
 def _halo(linewidth=2.5):
     """A background-colored stroke that keeps labels and marks legible.
 
     Reference marks take the text color, so over the bright end of an image
     they need an outline in the background color to stay visible.
     """
-    import matplotlib as mpl
     from matplotlib import patheffects
 
-    face = mpl.rcParams["axes.facecolor"]
+    face = eyepiece().neutral(0.0)
     return [patheffects.withStroke(linewidth=linewidth, foreground=face)]
 
 
@@ -379,7 +364,7 @@ def plot_lenslet_cells(
         corners = _cell_corners(cx, cy, cell_px, angle)
     kw = {
         "facecolors": "none",
-        "edgecolors": [_neutral(0.55)],
+        "edgecolors": [ep.neutral(0.55)],
         "linewidths": 0.6,
         "zorder": 3,
         **(cell_kw or {}),
@@ -426,7 +411,7 @@ def plot_lenslet_cells(
         artists["text"] = texts
 
     lenslet_texts = list(texts)
-    ref = _neutral(1.0)
+    ref = ep.role("text")
     refs = []
     if optical_center_px is not None:
         refs.append(
@@ -764,7 +749,7 @@ def plot_traces(
 
     trace_lines = list(lines)
     first = channels[0]
-    text_color = _neutral(1.0)
+    text_color = ep.role("text")
     for k, ha in ((0, "right"), (lam.shape[0] - 1, "left")):
         texts.append(
             ax.annotate(
@@ -795,7 +780,7 @@ def plot_traces(
             nx,
             ny,
             fill=False,
-            edgecolor=_neutral(0.8),
+            edgecolor=ep.neutral(0.8),
             linestyle="--",
             linewidth=1.0,
             label="detector edge",
@@ -874,7 +859,7 @@ def plot_traces(
             label="scan readout",
             bbox={
                 "boxstyle": "round,pad=0.25",
-                "facecolor": _neutral(0.0),
+                "facecolor": ep.neutral(0.0),
                 "edgecolor": "none",
                 "alpha": 0.8,
             },

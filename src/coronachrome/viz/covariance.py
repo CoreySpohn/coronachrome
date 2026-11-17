@@ -19,34 +19,6 @@ def _correlation(cov):
         return cov / np.outer(sd, sd)
 
 
-def _text_color():
-    """The active text color, resolved at call time."""
-    import matplotlib as mpl
-
-    return mpl.rcParams["text.color"]
-
-
-def _face_color():
-    """The active axes facecolor, resolved at call time."""
-    import matplotlib as mpl
-
-    return mpl.rcParams["axes.facecolor"]
-
-
-def _mid_neutral():
-    """A gray halfway from the axes facecolor to the text color.
-
-    Visible both on the pale center of a diverging map and on the background,
-    in either style mode.
-    """
-    import matplotlib as mpl
-    from matplotlib.colors import to_rgb
-
-    face = np.asarray(to_rgb(mpl.rcParams["axes.facecolor"]))
-    text = np.asarray(to_rgb(mpl.rcParams["text.color"]))
-    return tuple(0.5 * (face + text))
-
-
 def _tick_positions(n, max_ticks):
     """Every ``ceil(n / max_ticks)``-th index in ``range(n)``, from zero."""
     step = max(1, -(-n // max_ticks))
@@ -159,7 +131,7 @@ def plot_channel_covariance(
     ax.set_ylabel(axis_label)
 
     if n_blocks > 1:
-        edge = _mid_neutral()
+        edge = ep.neutral(0.5)
         lines = []
         for b in range(1, n_blocks):
             pos = b * n_wav - 0.5
@@ -172,7 +144,7 @@ def plot_channel_covariance(
             # orientation cannot be misread.
             from matplotlib import patheffects
 
-            halo = [patheffects.withStroke(linewidth=2.5, foreground=_face_color())]
+            halo = [patheffects.withStroke(linewidth=2.5, foreground=ep.neutral(0.0))]
             texts = []
             for b, name in enumerate(channel_labels):
                 texts.append(
@@ -183,7 +155,7 @@ def plot_channel_covariance(
                         ha="left",
                         va="top",
                         fontsize="small",
-                        color=_text_color(),
+                        color=ep.role("text"),
                         path_effects=halo,
                         zorder=5,
                     )
