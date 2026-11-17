@@ -70,7 +70,7 @@ ir = build_ir(
 
 # Two lenslets that are neighbors on the grid: lenslet-index (0, 0) and (1, 0).
 a, b = 24, 31
-styles = ep.SourceStyles([f"lenslet {a}", f"lenslet {b}"])
+styles = ep.style.SourceStyles([f"lenslet {a}", f"lenslet {b}"])
 ```
 
 The build warns when cells or node footprints reach outside the available

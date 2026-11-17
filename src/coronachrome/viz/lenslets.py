@@ -4,7 +4,7 @@ coronachrome supplies what eyepiece cannot know: where each lenslet's
 collection cell sits on the entrance plane, where each (lenslet, wavelength)
 PSFlet is centered on the detector, which detector pixels its footprint
 covers, and where the three reference points of the geometry lie. The pixels
-themselves are drawn by ``eyepiece.imshow_log``.
+themselves are drawn by ``eyepiece.plot.imshow_log``.
 
 Coordinates are pixel-center coordinates on both planes: pixel
 ``(row, column)`` is centered on ``(x, y) = (column, row)``, and images are
@@ -44,7 +44,7 @@ def _halo(linewidth=2.5):
     """
     from matplotlib import patheffects
 
-    face = eyepiece().neutral(0.0)
+    face = eyepiece().style.neutral(0.0)
     return [patheffects.withStroke(linewidth=linewidth, foreground=face)]
 
 
@@ -111,7 +111,7 @@ def _styles_for(ep, channels, styles):
     """The caller's ``SourceStyles``, or one declared from ``channels``."""
     if styles is not None:
         return styles
-    return ep.SourceStyles([_source_name(c) for c in channels])
+    return ep.style.SourceStyles([_source_name(c) for c in channels])
 
 
 def _edge_extent(shape):
@@ -143,7 +143,7 @@ def _log_image(ep, image, ax, extent, floor, vmin, vmax, cmap, cbar_label, kw, d
     peak = float(np.nanmax(image))
     if floor is None:
         floor = 10.0**-decades * peak if peak > 0 else 1e-20
-    return ep.imshow_log(
+    return ep.plot.imshow_log(
         image,
         ax=ax,
         extent=extent,
@@ -250,7 +250,7 @@ def plot_lenslet_cells(
             pixels, as its producer defines it; None draws no optical center.
         grid_origin_px: Lenslet-grid origin ``(x, y)`` for bare centers; with
             a disperser it is derived and this is ignored.
-        styles: An ``eyepiece.SourceStyles`` holding ``"lenslet <k>"`` names;
+        styles: An ``eyepiece.style.SourceStyles`` holding ``"lenslet <k>"`` names;
             None declares one from ``channels`` in order. Pass the same object
             to :func:`plot_traces` so a cell and its trace share a color.
         window: ``(x0, x1, y0, y1)`` axis limits in cube pixels; None shows the
@@ -273,9 +273,9 @@ def plot_lenslet_cells(
             created hidden (``set_visible(False)``) and stays in the result
             under its label, so a later figure can reveal it.
         colorbar: Colorbar placement for ``image``, as in
-            ``eyepiece.imshow_log`` (True for an inset, ``"figure"``, or False).
+            ``eyepiece.plot.imshow_log`` (True for an inset, ``"figure"``, or False).
         ax: Axes to draw into. None creates a figure.
-        imshow_kw: Routed to ``ax.imshow`` through ``eyepiece.imshow_log``.
+        imshow_kw: Routed to ``ax.imshow`` through ``eyepiece.plot.imshow_log``.
         cbar_kw: Routed to the colorbar.
         cell_kw: Routed to the ``PolyCollection`` of all cell outlines.
 
@@ -364,7 +364,7 @@ def plot_lenslet_cells(
         corners = _cell_corners(cx, cy, cell_px, angle)
     kw = {
         "facecolors": "none",
-        "edgecolors": [ep.neutral(0.55)],
+        "edgecolors": [ep.style.neutral(0.55)],
         "linewidths": 0.6,
         "zorder": 3,
         **(cell_kw or {}),
@@ -411,7 +411,7 @@ def plot_lenslet_cells(
         artists["text"] = texts
 
     lenslet_texts = list(texts)
-    ref = ep.role("text")
+    ref = ep.style.role("text")
     refs = []
     if optical_center_px is not None:
         refs.append(
@@ -592,7 +592,7 @@ def plot_traces(
             with a disperser.
         show_trace_origin: Mark the detector trace origin.
         show_detector_edge: Outline the detector boundary.
-        styles: An ``eyepiece.SourceStyles`` holding ``"lenslet <k>"`` names;
+        styles: An ``eyepiece.style.SourceStyles`` holding ``"lenslet <k>"`` names;
             None declares one from ``channels`` in order.
         window: ``(x0, x1, y0, y1)`` axis limits in detector pixels; None
             frames the drawn centroids with a 6 pixel margin.
@@ -628,10 +628,10 @@ def plot_traces(
             figure can reveal it. ``show_trace_origin`` and
             ``show_detector_edge`` decide whether those artists exist at
             all; ``show`` only hides what exists.
-        colorbar: Colorbar placement, as in ``eyepiece.imshow_log`` (True for
+        colorbar: Colorbar placement, as in ``eyepiece.plot.imshow_log`` (True for
             an inset, ``"figure"``, or False).
         ax: Axes to draw into. None creates a figure.
-        imshow_kw: Routed to ``ax.imshow`` through ``eyepiece.imshow_log``.
+        imshow_kw: Routed to ``ax.imshow`` through ``eyepiece.plot.imshow_log``.
         cbar_kw: Routed to the colorbar.
 
     Returns:
@@ -749,7 +749,7 @@ def plot_traces(
 
     trace_lines = list(lines)
     first = channels[0]
-    text_color = ep.role("text")
+    text_color = ep.style.role("text")
     for k, ha in ((0, "right"), (lam.shape[0] - 1, "left")):
         texts.append(
             ax.annotate(
@@ -780,7 +780,7 @@ def plot_traces(
             nx,
             ny,
             fill=False,
-            edgecolor=ep.neutral(0.8),
+            edgecolor=ep.style.neutral(0.8),
             linestyle="--",
             linewidth=1.0,
             label="detector edge",
@@ -859,7 +859,7 @@ def plot_traces(
             label="scan readout",
             bbox={
                 "boxstyle": "round,pad=0.25",
-                "facecolor": ep.neutral(0.0),
+                "facecolor": ep.style.neutral(0.0),
                 "edgecolor": "none",
                 "alpha": 0.8,
             },

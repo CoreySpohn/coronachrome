@@ -65,7 +65,7 @@ def plot_channel_covariance(
         max_ticks: Most wavelength ticks per lenslet block.
         ax: Axes to draw into. None creates a figure.
         imshow_kw: Routed to ``ax.imshow`` through
-            ``eyepiece.imshow_diverging``.
+            ``eyepiece.plot.imshow_diverging``.
         cbar_kw: Routed to the colorbar.
 
     Returns:
@@ -104,7 +104,7 @@ def plot_channel_covariance(
 
     data = transform(arr)
     vlim = 1.0 if correlation else float(np.nanmax(np.abs(data)))
-    drawn = ep.imshow_diverging(
+    drawn = ep.plot.imshow_diverging(
         data,
         ax=ax,
         extent=(-0.5, n - 0.5, -0.5, n - 0.5),
@@ -131,7 +131,7 @@ def plot_channel_covariance(
     ax.set_ylabel(axis_label)
 
     if n_blocks > 1:
-        edge = ep.neutral(0.5)
+        edge = ep.style.neutral(0.5)
         lines = []
         for b in range(1, n_blocks):
             pos = b * n_wav - 0.5
@@ -144,7 +144,9 @@ def plot_channel_covariance(
             # orientation cannot be misread.
             from matplotlib import patheffects
 
-            halo = [patheffects.withStroke(linewidth=2.5, foreground=ep.neutral(0.0))]
+            halo = [
+                patheffects.withStroke(linewidth=2.5, foreground=ep.style.neutral(0.0))
+            ]
             texts = []
             for b, name in enumerate(channel_labels):
                 texts.append(
@@ -155,7 +157,7 @@ def plot_channel_covariance(
                         ha="left",
                         va="top",
                         fontsize="small",
-                        color=ep.role("text"),
+                        color=ep.style.role("text"),
                         path_effects=halo,
                         zorder=5,
                     )

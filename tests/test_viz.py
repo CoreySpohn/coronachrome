@@ -161,7 +161,7 @@ def test_draws_on_supplied_ax_without_global_state_change(setup, which):
     assert isinstance(result, ep.PlotResult)
     assert result.ax is axes[0]
     assert result.fig is fig
-    assert set(result.artists) <= ep.ARTIST_KEYS
+    assert set(result.artists) <= ep.plot.ARTIST_KEYS
     assert plt.get_fignums() == figs_before
     assert plt.gca() is axes[1]
     assert dict(matplotlib.rcParams) == rc_before
