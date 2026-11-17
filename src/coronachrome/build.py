@@ -12,9 +12,8 @@ import warnings
 import jax
 import jax.numpy as jnp
 from hwoutils.grids import PixelGrid
-from hwoutils.spectral import Quadrature
+from hwoutils.spectral import Quadrature, spectral_knots
 from optixstuff.disperser import LensletDisperser
-from optixstuff.optical_elements import SpectralThroughput
 
 from coronachrome._collection import cell_overlap
 from coronachrome.dispersion import lenslet_centroids
@@ -237,9 +236,7 @@ def _(
         _validate_pack_for_band(
             pack, jnp.asarray([b.lo_nm for b in bands] + [b.hi_nm for b in bands]), half
         )
-    knots = []
-    if isinstance(disperser.throughput_element, SpectralThroughput):
-        knots.extend(disperser.throughput_element.wavelengths_nm.tolist())
+    knots = spectral_knots(disperser.throughput_element).tolist()
     if pack is not None:
         knots.extend(pack.wavelengths_nm.tolist())
     quadrature = Quadrature.build(bands, knots, quadrature_order)

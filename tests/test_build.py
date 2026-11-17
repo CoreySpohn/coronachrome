@@ -5,7 +5,8 @@ import jax.numpy as jnp
 import pytest
 from conftest import bands_at, focal_image, sky_grid
 from hwoutils.grids import Frame, PixelGrid, SkyOrientation
-from hwoutils.spectral import Band
+from hwoutils.spectral import Band, Transmission
+from optixstuff import TransmissiveElement
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome import IFSRenderer, build_ir, spatial_sample
@@ -253,10 +254,8 @@ def test_throughput_scales_footprint_sums():
 
     Knot-split triangle integral at the floating-point floor.
     """
-    from optixstuff import SpectralThroughput
-
-    curve = SpectralThroughput(
-        jnp.array([600.0, 650.0, 700.0]), jnp.array([0.2, 0.8, 0.2])
+    curve = TransmissiveElement(
+        Transmission(jnp.array([600.0, 650.0, 700.0]), jnp.array([0.2, 0.8, 0.2]))
     )
     ir = build_ir(
         _disp(1, throughput_element=curve),
