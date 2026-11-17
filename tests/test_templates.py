@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
+from hwoutils.grids import PixelGrid
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -66,6 +67,40 @@ def test_pack_roundtrip_without_centroids(tmp_path):
     path = tmp_path / "pack.npz"
     save_psflet_pack(path, pack)
     assert load_psflet_pack(path).centroids is None
+
+
+def test_physical_payload_roundtrip(tmp_path):
+    """Fails if physical payloads cannot serialize; exact array/metadata equality.
+
+    Serialization performs no arithmetic, so every payload field is lossless.
+    """
+    physicaloptix = pytest.importorskip("physicaloptix")
+
+    chain = physicaloptix.LensletChain(
+        jnp.ones((8, 8)),
+        PixelGrid.pupil(8),
+        pitch_lod_ref=0.5,
+        lam_ref_nm=1000.0,
+        micropupil_px=1.5,
+        n_tile=8,
+        n_mp=16,
+        n_stop=8,
+        mp_half_extent=2.0,
+        illumination="flat",
+    )
+    payload = physicaloptix.psflet_pack(
+        chain,
+        [900.0, 1100.0],
+        half_extent=1.0,
+        step=0.5,
+        n_quad=2,
+    )
+    path = tmp_path / "physical.npz"
+    save_psflet_pack(path, PsfletPack(**payload))
+    loaded = load_psflet_pack(path)
+    for name in ("templates", "offsets", "wavelengths_nm", "field_xy", "centroids"):
+        np.testing.assert_array_equal(getattr(loaded, name), payload[name])
+    assert loaded.meta_json == payload["meta_json"]
 
 
 def test_pack_validation_rejects_bad_shapes():

@@ -1,4 +1,4 @@
-"""Nyquist spectral channel grids and flux-conserving rebinning.
+"""Nyquist spectral channel grids.
 
 The channel rule ``n = ceil(R ln(lam2 / lam1))`` allocates one channel per
 resolution element across the band. It is a correctness contract, not a
@@ -15,7 +15,6 @@ channel is constant across the band.
 
 import math
 
-import jax.numpy as jnp
 from hwoutils.spectral import Band
 
 # Slack subtracted before the ceil so a band spanning an exact integer number
@@ -62,34 +61,3 @@ def spectral_grid(resolving_power, lam_min_nm, lam_max_nm, oversample=1):
     n = n_nyquist_channels(resolving_power, lam_min_nm, lam_max_nm)
     base = Band(lam_min_nm, lam_max_nm).channels(n, "log")
     return tuple(sub for band in base for sub in band.channels(oversample, "log"))
-
-
-def rebin_channels(values, src_bands, dst_bands, axis=0):
-    """Rebin channel integrals using exact Band overlaps, preserving units.
-
-    Assumes constant spectral density within each source Band. An Image
-    retains its spatial grid, measure, quantity and reconstruction; axis must
-    name a leading (non-spatial) dimension in that case.
-    """
-    from dataclasses import replace
-
-    from hwoutils.grids import Image
-
-    image = values if isinstance(values, Image) else None
-    data = image.data if image is not None else jnp.asarray(values)
-    axis = axis % data.ndim
-    if image is not None and axis >= data.ndim - 2:
-        raise ValueError("spectral axis must be a leading Image axis")
-    if data.shape[axis] != len(src_bands):
-        raise ValueError("source bands must match the spectral axis")
-    src_lo = jnp.asarray([b.lo_nm for b in src_bands])
-    src_hi = jnp.asarray([b.hi_nm for b in src_bands])
-    dst_lo = jnp.asarray([b.lo_nm for b in dst_bands])
-    dst_hi = jnp.asarray([b.hi_nm for b in dst_bands])
-    lo = jnp.maximum(dst_lo[:, None], src_lo[None])
-    hi = jnp.minimum(dst_hi[:, None], src_hi[None])
-    frac = jnp.maximum(hi - lo, 0) / (src_hi - src_lo)[None]
-    out = jnp.moveaxis(
-        jnp.tensordot(frac, jnp.moveaxis(data, axis, 0), axes=1), 0, axis
-    )
-    return replace(image, data=out) if image is not None else out

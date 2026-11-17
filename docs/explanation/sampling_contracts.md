@@ -64,7 +64,8 @@ log-spaced edges, including both outer endpoints. Each channel's
 
 `spectral_grid(R, lo_nm, hi_nm, oversample=1)` returns Bands, with
 `n = ceil(R*log(hi_nm/lo_nm))`. Oversampling subdivides each base Band, preserving
-its edges exactly. `rebin_channels(values, src_bands, dst_bands, axis=0)` apportions
+its edges exactly.
+`hwoutils.spectral.rebin_bands(values, src_bands, dst_bands, axis=0)` apportions
 bin integrals by overlap. For an Image it preserves spatial metadata. Full
 coverage conserves the integral to the floating-point floor; partial coverage
 loses the uncovered fraction. A source bin is assumed to have constant density.

@@ -17,7 +17,6 @@ from coronachrome.ir import SpatialChannelIR
 from coronachrome.render import IFSRenderer, spatial_sample
 from coronachrome.spectral import (
     n_nyquist_channels,
-    rebin_channels,
     spectral_grid,
 )
 from coronachrome.templates import (
@@ -43,7 +42,6 @@ __all__ = [
     "marginal_covariance",
     "matched_filter",
     "n_nyquist_channels",
-    "rebin_channels",
     "save_psflet_pack",
     "spatial_sample",
     "spectral_grid",
