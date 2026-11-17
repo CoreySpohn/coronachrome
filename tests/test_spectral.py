@@ -9,8 +9,6 @@ import pytest
 from hwoutils.spectral import Band, Quadrature
 
 from coronachrome.spectral import (
-    channel_centers,
-    channel_edges,
     n_nyquist_channels,
     rebin_channels,
     spectral_grid,
@@ -39,29 +37,6 @@ def test_n_nyquist_channels_validates_band():
         n_nyquist_channels(50.0, 700.0, 600.0)
 
 
-def test_channel_edges_constant_ratio():
-    """Log-spaced edges keep a constant ratio, so R is constant per channel."""
-    edges = channel_edges(29, 855.0, 1045.0)
-    assert len(edges) == 29
-    assert edges[0].lo_nm == 855.0 and edges[-1].hi_nm == 1045.0
-    assert all(a.hi_nm == b.lo_nm for a, b in pairwise(edges))
-    edges = jnp.asarray([edges[0].lo_nm] + [b.hi_nm for b in edges])
-    ratios = edges[1:] / edges[:-1]
-    assert jnp.allclose(ratios, ratios[0], rtol=2e-15, atol=0)
-    assert jnp.allclose(edges[0], 855.0)
-    assert jnp.allclose(edges[-1], 1045.0)
-
-
-def test_channel_centers_are_geometric_means():
-    """Centers are the geometric means of adjacent log-spaced edges."""
-    edges = channel_edges(4, 500.0, 1000.0)
-    centers = channel_centers(edges)
-    assert centers.shape == (4,)
-    assert jnp.allclose(
-        centers, jnp.asarray([(b.lo_nm * b.hi_nm) ** 0.5 for b in edges])
-    )
-
-
 def test_spectral_grid_composes_count_and_edges():
     """spectral_grid combines the channel count and edge/center construction."""
     edges = spectral_grid(140.0, 855.0, 1045.0)
@@ -83,8 +58,8 @@ def test_spectral_grid_oversample_nests():
 @vv.case("ifs-extraction", "code-verification")
 def test_rebin_conserves_total_flux():
     """Fails if overlap weights lose flux; float64 floor of 8 eps on exact tiling."""
-    src_edges = channel_edges(24, 600.0, 700.0)
-    dst_edges = channel_edges(8, 600.0, 700.0)
+    src_edges = Band(600.0, 700.0).channels(24, "log")
+    dst_edges = Band(600.0, 700.0).channels(8, "log")
     q = Quadrature.build(src_edges, None, 3)
     values = q.integrate(q.nodes_nm**2)
     exact = (700.0**3 - 600.0**3) / 3
@@ -106,8 +81,8 @@ def test_rebin_nested_grid_equals_reshape_sum():
 
 def test_rebin_along_cube_axis():
     """Rebinning applies along the chosen axis of a (n_wav, ny, nx) cube."""
-    src_edges = channel_edges(12, 600.0, 700.0)
-    dst_edges = channel_edges(4, 600.0, 700.0)
+    src_edges = Band(600.0, 700.0).channels(12, "log")
+    dst_edges = Band(600.0, 700.0).channels(4, "log")
     cube = jax.random.uniform(jax.random.PRNGKey(0), (12, 3, 2))
     out = rebin_channels(cube, src_edges, dst_edges, axis=0)
     assert out.shape == (4, 3, 2)

@@ -92,13 +92,13 @@ spectra = lstsq(renderer, detector)  # Image on the lenslet sky grid
 assert spectra.quantity == "phot/s"
 ```
 
-`LensletLayout(..., lenslet_origin="geometric")` is the default: square centres
-subtract `(n-1)/2`; hex centres also remove the mean row stagger. The explicit
-`"central_index"` option retains the historical `n//2` convention. Focal-plane
-centres come from the input grid; detector centres use `(n-1)/2`.
+`LensletLayout` centres every layout geometrically: square centres subtract
+`(n-1)/2`; hex centres also remove the mean row stagger. Focal-plane centres
+come from the input grid; detector centres come from `hwoutils.radial.get_center`.
 
-Channels are `hwoutils.spectral.Band` intervals. `channel_centers(bands)` retains
-geometric-mean reference wavelengths in nm, distinct from `Band.center_nm`.
+Channels are `hwoutils.spectral.Band` intervals. Each channel's
+`Band.geometric_center_nm` is its reference wavelength, distinct from the
+arithmetic `Band.center_nm`.
 Lenslet collection exactly integrates piecewise-constant focal pixels by
 cell/pixel overlap; smooth reconstructions, including band-limited images,
 use that approximation (see the sampling contracts). An input in lambda/D must

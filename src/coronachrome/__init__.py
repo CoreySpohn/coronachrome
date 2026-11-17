@@ -16,8 +16,6 @@ from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.render import IFSRenderer, spatial_sample
 from coronachrome.spectral import (
-    channel_centers,
-    channel_edges,
     n_nyquist_channels,
     rebin_channels,
     spectral_grid,
@@ -38,8 +36,6 @@ __all__ = [
     "amplitude_basis",
     "analytic_psflet_pack",
     "build_ir",
-    "channel_centers",
-    "channel_edges",
     "detector_statistics",
     "extraction_weights",
     "load_psflet_pack",

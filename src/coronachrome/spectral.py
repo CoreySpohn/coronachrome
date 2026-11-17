@@ -48,26 +48,11 @@ def n_nyquist_channels(resolving_power, lam_min_nm, lam_max_nm):
     return max(1, math.ceil(n_reselts - _CEIL_TOL))
 
 
-def channel_edges(n_chan, lam_min_nm, lam_max_nm):
-    """Partition the exact band into log-spaced Band intervals.
-
-    Endpoints retain their nm meaning; the return is a tuple of Bands.
-    The reference wavelength of each channel is its geometric mean, exposed
-    by channel_centers, distinct from Band.center_nm (arithmetic).
-    """
-    return Band(lam_min_nm, lam_max_nm).channels(n_chan, spacing="log")
-
-
-def channel_centers(bands):
-    """Geometric-mean reference wavelengths [nm] of a sequence of Bands."""
-    return jnp.asarray([math.sqrt(b.lo_nm * b.hi_nm) for b in bands])
-
-
 def spectral_grid(resolving_power, lam_min_nm, lam_max_nm, oversample=1):
     """Return one Band per log-spaced spectral channel.
 
     oversample subdivides every Nyquist band, preserving shared edges exactly.
-    Use channel_centers(bands) for geometric reference wavelengths [nm].
+    Use each Band.geometric_center_nm for reference wavelengths [nm].
     """
     from operator import index
 
@@ -75,7 +60,7 @@ def spectral_grid(resolving_power, lam_min_nm, lam_max_nm, oversample=1):
     if oversample < 1:
         raise ValueError("oversample must be positive")
     n = n_nyquist_channels(resolving_power, lam_min_nm, lam_max_nm)
-    base = channel_edges(n, lam_min_nm, lam_max_nm)
+    base = Band(lam_min_nm, lam_max_nm).channels(n, "log")
     return tuple(sub for band in base for sub in band.channels(oversample, "log"))
 
 

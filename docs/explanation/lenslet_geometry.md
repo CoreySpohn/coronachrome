@@ -36,7 +36,7 @@ import numpy as np
 from IPython.display import HTML
 from optixstuff.disperser import LensletDisperser
 from hwoutils.grids import PixelGrid
-from coronachrome import channel_centers
+
 
 import eyepiece as ep
 from coronachrome import IFSRenderer, build_ir, spectral_grid, spectrum_covariance
@@ -61,7 +61,7 @@ disperser = LensletDisperser(
     detector_shape=(120, 120),
 )
 bands = spectral_grid(50.0, 600.0, 720.0)
-lam = channel_centers(bands)
+lam = jnp.asarray([band.geometric_center_nm for band in bands])
 fp_shape = (64, 64)
 fp_grid = PixelGrid.regular(fp_shape, 0.005, "arcsec")
 ir = build_ir(
@@ -85,10 +85,8 @@ the cube; here the scene is centered on the geometric array center,
 $((n_x - 1)/2, (n_y - 1)/2) = (31.5, 31.5)$. The **lenslet-grid origin** is
 where lenslet-index $(0, 0)$ sits, and follows the cube's declared PixelGrid
 centre, here also `(31.5, 31.5)`. The detector trace origin is its geometric
-array centre, `(59.5, 59.5)`. `LensletLayout` names the separate lenslet index
-convention: `geometric` subtracts `(n-1)/2`, while `central_index` subtracts
-`n//2`. For square arrays those agree for odd n; even n shifts by half a pitch.
-For hex arrays geometric centring also removes the mean odd-row x stagger.
+array centre, `(59.5, 59.5)`. `LensletLayout` subtracts `(n-1)/2` from
+the square lenslet indices. Hex arrays also remove the mean odd-row x stagger.
 Hex outputs use an axial parallelogram PixelGrid with unused pixels zero.
 
 ```{code-cell} ipython3

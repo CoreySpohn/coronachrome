@@ -120,7 +120,8 @@ import numpy as np
 from optixstuff.disperser import LensletDisperser
 
 from hwoutils.grids import PixelGrid
-from coronachrome import analytic_psflet_pack, build_ir, channel_edges, channel_centers
+from coronachrome import analytic_psflet_pack, build_ir
+from hwoutils.spectral import Band
 from coronachrome import viz
 
 jax.config.update("jax_enable_x64", True)
@@ -147,10 +148,10 @@ disperser = LensletDisperser(
     psflet_kind="template",
     detector_shape=(96, 96),
 )
-bands = channel_edges(6, 600.0, 720.0)
+bands = Band(600.0, 720.0).channels(6, "log")
 fp_grid = PixelGrid.regular((40, 40), 0.005, "arcsec")
 ir = build_ir(disperser, bands, fp_grid, psflet_pack=pack)
-lam = channel_centers(bands)
+lam = jnp.asarray([band.geometric_center_nm for band in bands])
 fig, ax = plt.subplots(figsize=(7.5, 3.2), layout="constrained")
 viz.plot_traces(
     ir, disperser, lam, channels=(12,), psflet_pack=pack, colorbar="figure", ax=ax

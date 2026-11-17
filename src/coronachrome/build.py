@@ -17,11 +17,10 @@ from optixstuff.disperser import LensletDisperser
 from optixstuff.optical_elements import SpectralThroughput
 
 from coronachrome._collection import cell_overlap
-from coronachrome.dispersion import dispersion_px, lenslet_centroids
+from coronachrome.dispersion import lenslet_centroids
 from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.psflet import psflet_weights
-from coronachrome.spectral import channel_centers
 from coronachrome.templates import (
     load_psflet_pack,
     nearest_field_idx,
@@ -114,7 +113,7 @@ def _placement_centroids(disperser, positions, lam, pack):
     without a pack.
     """
     scale = disperser.pitch_m / disperser.pixsize_m
-    disp = dispersion_px(disperser.dispersion_coeffs, disperser.lam_ref_nm, lam)
+    disp = disperser.dispersion_px(lam)
     xc, yc = lenslet_centroids(
         positions, scale, disperser.angle_rad, disp, disperser.detector_shape
     )
@@ -231,7 +230,7 @@ def _(
         raise ValueError("sky_pitch_arcsec must be positive")
     layout = _layout(disperser, layout)
     bands = tuple(bands)
-    lam = channel_centers(bands)
+    lam = jnp.asarray([band.geometric_center_nm for band in bands])
     pack = None
     if disperser.psflet_kind == "template":
         pack = _resolve_psflet_pack(disperser, psflet_pack)
