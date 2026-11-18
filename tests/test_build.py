@@ -4,10 +4,10 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 from conftest import bands_at, focal_image, sky_grid
-from hwoutils.grids import Frame, Measure, PixelGrid, SkyOrientation
-from hwoutils.spectral import Band, Transmission
 from optixstuff import TransmissiveElement
 from optixstuff.disperser import LensletDisperser
+from optixstuff.grids import Frame, Measure, PixelGrid, SkyOrientation
+from optixstuff.spectral import Band, Transmission
 
 from coronachrome import IFSRenderer, build_ir, spatial_sample
 from coronachrome.build import lenslet_cell_centers

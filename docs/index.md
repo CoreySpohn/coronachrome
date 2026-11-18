@@ -3,7 +3,7 @@
 A JAX lenslet integral-field-spectrograph (IFS) forward model and spectral
 extractor for the Habitable Worlds Observatory.
 
-`coronachrome` takes a multi-wavelength focal-plane `hwoutils.grids.Image` (for example from
+`coronachrome` takes a multi-wavelength focal-plane `optixstuff.grids.Image` (for example from
 {mod}`coronagraphoto`) together with a hardware description (an
 {class}`optixstuff.Instrument` carrying a lenslet disperser), and produces the
 dispersed IFS detector image: a field of per-lenslet micro-spectra, where each

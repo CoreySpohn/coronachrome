@@ -3,8 +3,8 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from hwoutils.grids import Image, Measure, integrate_footprints
 from jax.experimental.sparse import BCOO
+from optixstuff.grids import Image, Measure, integrate_footprints
 
 from coronachrome.ir import SpatialChannelIR
 

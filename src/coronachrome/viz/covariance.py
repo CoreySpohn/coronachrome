@@ -8,7 +8,7 @@ overlapping traces put covariance between neighboring lenslets.
 """
 
 import numpy as np
-from hwoutils.grids import PixelGrid
+from optixstuff.grids import PixelGrid
 
 from coronachrome.viz._require import eyepiece
 

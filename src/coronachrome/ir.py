@@ -2,9 +2,9 @@
 
 import equinox as eqx
 import jax.numpy as jnp
-from hwoutils.grids import CellOverlap, PixelGrid
-from hwoutils.spectral import Band
 from jax import Array
+from optixstuff.grids import CellOverlap, PixelGrid
+from optixstuff.spectral import Band
 
 from coronachrome.grids import LensletLayout
 

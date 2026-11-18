@@ -18,8 +18,8 @@ matrix of those basis functions, with the nuisance block marginalized. See
 import jax
 import jax.numpy as jnp
 import lineax as lx
-from hwoutils.grids import Image
 from jax import eval_shape
+from optixstuff.grids import Image
 
 from coronachrome.render import spatial_sample
 
@@ -31,8 +31,8 @@ def detector_statistics(renderer, detector, electron_rates, plan):
     bands before the detector call: a dispersed detector pays noise once per
     physical pixel. Yield belongs upstream in detector.electrons.
     """
-    from hwoutils.spectral import Band
     from optixstuff.rates import ElectronRates
+    from optixstuff.spectral import Band
 
     shape = electron_rates.total().shape
     if len(shape) != 3 or shape[1:] != renderer.ir.det_shape:

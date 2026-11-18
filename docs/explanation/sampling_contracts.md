@@ -1,6 +1,6 @@
 # Sampling contracts
 
-Inputs are `hwoutils.grids.Image` cubes with data `(band, y, x)`, leading axes
+Inputs are `optixstuff.grids.Image` cubes with data `(band, y, x)`, leading axes
 `("wavelength",)`, an arcsec `PixelGrid`, a spatial `measure`, a `quantity`, and
 an explicit reconstruction. Pixel `(j, i)` is centred at `(x, y)=(i, j)`.
 Generated grids use geometric centres `(n-1)/2`.
@@ -15,7 +15,7 @@ focal-plane spacing comes from the grid. For isotropic axis-aligned grids,
 lenslet pitch divided by that spacing. Scalar scale inspection raises for
 anisotropic or rotated source bases; rendering supports their full bases.
 
-The renderer prepares `hwoutils.grids.footprint_overlap` from the focal grid
+The renderer prepares `optixstuff.grids.footprint_overlap` from the focal grid
 and the lenslet collection grids. Aligned cells use separable interval
 overlaps. Rotated cells use exact convex-polygon intersections. Rendering
 applies the stored weights to all wavelengths with JAX.
@@ -60,7 +60,7 @@ log-spaced edges, including both outer endpoints. Each channel's
 `spectral_grid(R, lo_nm, hi_nm, oversample=1)` returns Bands, with
 `n = ceil(R*log(hi_nm/lo_nm))`. Oversampling subdivides each base Band, preserving
 its edges exactly.
-`hwoutils.spectral.rebin_bands(values, src_bands, dst_bands, axis=0)` apportions
+`optixstuff.spectral.rebin_bands(values, src_bands, dst_bands, axis=0)` apportions
 bin integrals by overlap. For an Image it preserves spatial metadata. Full
 coverage conserves the integral to the floating-point floor; partial coverage
 loses the uncovered fraction. A source bin is assumed to have constant density.

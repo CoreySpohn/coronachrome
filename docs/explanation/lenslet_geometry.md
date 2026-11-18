@@ -35,7 +35,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from IPython.display import HTML
 from optixstuff.disperser import LensletDisperser
-from hwoutils.grids import PixelGrid
+from optixstuff.grids import PixelGrid
 
 
 import eyepiece as ep

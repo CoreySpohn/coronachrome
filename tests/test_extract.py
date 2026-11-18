@@ -6,8 +6,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from conftest import bands_at, sky_grid
-from hwoutils.grids import Measure
 from optixstuff.disperser import LensletDisperser
+from optixstuff.grids import Measure
 
 from coronachrome.build import build_ir
 from coronachrome.extract import (
@@ -284,10 +284,10 @@ def test_detector_variance_one_lenslet_one_band():
     mean=44.5 e; variance=2*44.5+2*9=107 e^2. GLS variance is 107.
     Tolerance is 32 eps for one scalar solve, not a noise realization.
     """
-    from hwoutils.spectral import Band
     from optixstuff.detector import Detector
     from optixstuff.exposure import FramePlan
     from optixstuff.rates import ElectronRates
+    from optixstuff.spectral import Band
 
     from coronachrome import detector_statistics, extraction_weights
 

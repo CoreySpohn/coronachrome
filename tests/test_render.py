@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid, square_rectangle_area
-from hwoutils.grids import Measure
 from optixstuff.disperser import LensletDisperser
+from optixstuff.grids import Measure
 
 from coronachrome.build import build_ir
 from coronachrome.render import IFSRenderer, spatial_sample
@@ -107,8 +107,8 @@ def test_end_to_end_point_source_lands_on_detector():
     Nearest lenslet (+.1,-.1) is channel 2 (x-major). Its detector trace is
     (29.5+5+2,19.5-5)=(36.5,14.5), with constant +2px dispersion.
     """
-    from hwoutils.grids import SkyOrientation
-    from hwoutils.spectral import Band
+    from optixstuff.grids import SkyOrientation
+    from optixstuff.spectral import Band
 
     from coronachrome.build import lenslet_cell_centers
 

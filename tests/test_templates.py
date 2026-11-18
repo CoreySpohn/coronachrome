@@ -4,10 +4,10 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
-from hwoutils.spectral import Band
 from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
 from optixstuff.psflet_pack import PsfletPack, save_psflet_pack
+from optixstuff.spectral import Band
 
 from coronachrome.build import build_ir
 from coronachrome.templates import (

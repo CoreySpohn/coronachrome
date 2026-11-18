@@ -51,7 +51,7 @@ pip install coronachrome
 
 ```python
 import jax.numpy as jnp
-from hwoutils.grids import Image, Measure, PixelGrid, SkyOrientation
+from optixstuff.grids import Image, Measure, PixelGrid, SkyOrientation
 from optixstuff import LensletDisperser
 
 from coronachrome import IFSRenderer, build_ir, lstsq, spectral_grid
@@ -96,7 +96,7 @@ assert spectra.quantity == "phot/s"
 `(n-1)/2`; hex centres also remove the mean row stagger. Focal-plane centres
 come from the input grid; detector centres come from `hwoutils.radial.get_center`.
 
-Channels are `hwoutils.spectral.Band` intervals. Each channel's
+Channels are `optixstuff.spectral.Band` intervals. Each channel's
 `Band.geometric_center_nm` is its reference wavelength, distinct from the
 arithmetic `Band.center_nm`.
 Lenslet collection exactly integrates piecewise-constant focal pixels by

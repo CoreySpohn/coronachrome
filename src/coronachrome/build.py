@@ -11,10 +11,10 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-from hwoutils.grids import PixelGrid, footprint_overlap
-from hwoutils.spectral import Quadrature
 from optixstuff.disperser import LensletDisperser
+from optixstuff.grids import PixelGrid, footprint_overlap
 from optixstuff.psflet_pack import load_psflet_pack
+from optixstuff.spectral import Quadrature
 
 from coronachrome.dispersion import lenslet_centroids
 from coronachrome.grids import LensletLayout

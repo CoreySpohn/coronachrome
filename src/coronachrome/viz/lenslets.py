@@ -24,8 +24,8 @@ quantities:
 
 import jax.numpy as jnp
 import numpy as np
-from hwoutils.grids import PixelGrid
 from optixstuff.disperser import LensletDisperser
+from optixstuff.grids import PixelGrid
 
 from coronachrome.build import (
     detector_centroids,

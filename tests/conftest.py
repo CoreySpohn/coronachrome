@@ -4,8 +4,8 @@ import importlib.util
 import os
 
 import jax
-from hwoutils.grids import Measure
 from hypothesis import settings
+from optixstuff.grids import Measure
 
 # Released hwoutils versions may not include the optional budget plugin yet.
 pytest_plugins = []
@@ -29,7 +29,7 @@ def bands_at(wavelengths_nm, width_nm=1e-4):
     """
     import math
 
-    from hwoutils.spectral import Band
+    from optixstuff.spectral import Band
 
     return tuple(
         Band(
@@ -42,14 +42,14 @@ def bands_at(wavelengths_nm, width_nm=1e-4):
 
 def sky_grid(shape, step=0.1, **kwargs):
     """Geometrically centred focal-plane PixelGrid in arcsec."""
-    from hwoutils.grids import PixelGrid
+    from optixstuff.grids import PixelGrid
 
     return PixelGrid.regular(shape, step, "arcsec", **kwargs)
 
 
 def focal_image(data, grid, *, reconstruction="nearest", measure=None):
     """Explicit band-integrated test Image, including stacks of mode cubes."""
-    from hwoutils.grids import Image
+    from optixstuff.grids import Image
 
     axes = ("mode", "wavelength") if data.ndim == 4 else ("wavelength",)
     return Image(

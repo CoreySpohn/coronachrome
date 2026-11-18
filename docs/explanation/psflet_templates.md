@@ -121,9 +121,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from optixstuff.disperser import LensletDisperser
 
-from hwoutils.grids import PixelGrid
+from optixstuff.grids import PixelGrid
 from coronachrome import analytic_psflet_pack, build_ir
-from hwoutils.spectral import Band
+from optixstuff.spectral import Band
 from coronachrome import viz
 
 jax.config.update("jax_enable_x64", True)

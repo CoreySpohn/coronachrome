@@ -15,7 +15,7 @@ channel is constant across the band.
 
 import math
 
-from hwoutils.spectral import Band
+from optixstuff.spectral import Band
 
 # Slack subtracted before the ceil so a band spanning an exact integer number
 # of resolution elements (up to float rounding) is not bumped to the next

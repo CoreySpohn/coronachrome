@@ -6,8 +6,8 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 from conftest import sky_grid
-from hwoutils.grids import PixelGrid, footprint_overlap
-from hwoutils.spectral import Band
+from optixstuff.grids import PixelGrid, footprint_overlap
+from optixstuff.spectral import Band
 
 from coronachrome import LensletLayout, SpatialChannelIR
 

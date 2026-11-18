@@ -6,8 +6,8 @@ from operator import index
 
 import jax
 import jax.numpy as jnp
-from hwoutils.grids import PixelGrid
 from hwoutils.radial import get_center
+from optixstuff.grids import PixelGrid
 
 
 def square_grid(n_lenslets):
