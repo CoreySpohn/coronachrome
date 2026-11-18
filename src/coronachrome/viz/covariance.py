@@ -8,6 +8,7 @@ overlapping traces put covariance between neighboring lenslets.
 """
 
 import numpy as np
+from hwoutils.grids import PixelGrid
 
 from coronachrome.viz._require import eyepiece
 
@@ -107,7 +108,7 @@ def plot_channel_covariance(
     drawn = ep.plot.imshow_diverging(
         data,
         ax=ax,
-        extent=(-0.5, n - 0.5, -0.5, n - 0.5),
+        grid=PixelGrid.regular(arr.shape, 1, "pixel", center=(0, 0)),
         vlim=vlim,
         cbar_label="correlation" if correlation else "covariance",
         imshow_kw=imshow_kw,

@@ -24,6 +24,7 @@ quantities:
 
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.grids import PixelGrid
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import (
@@ -114,12 +115,6 @@ def _styles_for(ep, channels, styles):
     return ep.style.SourceStyles([_source_name(c) for c in channels])
 
 
-def _edge_extent(shape):
-    """``(left, right, bottom, top)`` pixel-edge extent of a ``(ny, nx)`` grid."""
-    ny, nx = shape
-    return (-0.5, nx - 0.5, -0.5, ny - 0.5)
-
-
 def _cell_corners(cx, cy, cell_px, angle_rad):
     """Corners ``(n, 4, 2)`` of square cells of side ``cell_px`` rotated by angle.
 
@@ -136,7 +131,7 @@ def _cell_corners(cx, cy, cell_px, angle_rad):
     return np.stack([cx + rx, cy + ry], axis=-1)
 
 
-def _log_image(ep, image, ax, extent, floor, vmin, vmax, cmap, cbar_label, kw, decades):
+def _log_image(ep, image, ax, grid, floor, vmin, vmax, cmap, cbar_label, kw, decades):
     """Draw ``image`` with ``imshow_log``, ``decades`` below its peak."""
     if not decades > 0:
         raise ValueError(f"decades must be positive, got {decades}")
@@ -146,7 +141,7 @@ def _log_image(ep, image, ax, extent, floor, vmin, vmax, cmap, cbar_label, kw, d
     return ep.plot.imshow_log(
         image,
         ax=ax,
-        extent=extent,
+        grid=grid,
         floor=floor,
         vmin=floor if vmin is None else vmin,
         vmax=vmax,
@@ -333,7 +328,7 @@ def plot_lenslet_cells(
 
     if ax is None:
         _, ax = plt.subplots(layout="constrained")
-    extent = _edge_extent(fp_grid.shape)
+    grid = PixelGrid.regular(fp_grid.shape, 1, "pixel", center=(0, 0))
     artists = {}
     if image is not None:
         img = np.asarray(image, dtype=float)
@@ -347,7 +342,7 @@ def plot_lenslet_cells(
             ep,
             img,
             ax,
-            extent,
+            grid,
             floor,
             None,
             None,
@@ -436,7 +431,7 @@ def plot_lenslet_cells(
         shown,
     )
 
-    x0, x1, y0, y1 = extent if window is None else window
+    x0, x1, y0, y1 = grid.extent() if window is None else window
     ax.set_xlim(x0, x1)
     ax.set_ylim(y0, y1)
     ax.set_aspect("equal")
@@ -708,7 +703,7 @@ def plot_traces(
         ep,
         image,
         ax,
-        _edge_extent(det_shape),
+        PixelGrid.regular(det_shape, 1, "pixel", center=(0, 0)),
         floor,
         vmin,
         vmax,
