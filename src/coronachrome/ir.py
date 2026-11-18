@@ -2,11 +2,10 @@
 
 import equinox as eqx
 import jax.numpy as jnp
-from hwoutils.grids import PixelGrid
+from hwoutils.grids import CellOverlap, PixelGrid
 from hwoutils.spectral import Band
 from jax import Array
 
-from coronachrome._collection import CellOverlap
 from coronachrome.grids import LensletLayout
 
 
@@ -23,7 +22,7 @@ class SpatialChannelIR(eqx.Module):
     layout: LensletLayout = eqx.field(static=True)
     collection_grids: tuple[PixelGrid, ...] = eqx.field(static=True)
 
-    collection_overlap: CellOverlap = eqx.field(static=True)
+    collection_overlap: CellOverlap
 
     @property
     def n_channels(self):

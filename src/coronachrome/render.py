@@ -3,7 +3,7 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from hwoutils.grids import Image
+from hwoutils.grids import Image, Measure, integrate_footprints
 from jax.experimental.sparse import BCOO
 
 from coronachrome.ir import SpatialChannelIR
@@ -12,33 +12,18 @@ from coronachrome.ir import SpatialChannelIR
 def spatial_sample(cube: Image, ir: SpatialChannelIR):
     """Return band-integrated lenslet flux (n_channels,n_wav).
 
-    The stored sparse overlap matrix exactly integrates piecewise-constant
-    density: per_pixel values divided by focal pixel area, or per_unit_area
-    values as supplied. This is exact for nearest reconstruction. For linear,
-    cubic and band_limited declarations it approximates the smooth density
-    by constant pixel values; it does not integrate their interpolants.
-    Refine the focal grid to control that approximation (see sampling docs).
-    Outside the focal grid density is zero, without edge renormalization.
-    Hex layouts retain overlapping square apertures at staggered centres.
+    Integrate piecewise-constant focal pixels over each collection cell.
+    Outside the focal grid the density is zero. Square layouts enumerate
+    channels x-major, while hex layouts enumerate cells in row order.
     """
     if cube.grid != ir.fp_grid:
         raise ValueError("cube grid must match the IR focal-plane grid")
     if cube.leading_axes != ("wavelength",) or cube.data.shape[0] != ir.n_wav:
         raise ValueError("cube must have one wavelength axis matching the IR bands")
-    overlap = ir.collection_overlap
-    matrix = BCOO(
-        (
-            jnp.asarray(overlap.areas_arcsec2),
-            jnp.asarray(overlap.indices, dtype=jnp.int32).reshape(-1, 2),
-        ),
-        shape=overlap.shape,
-        indices_sorted=True,
-        unique_indices=True,
-    )
-    density = cube.data.reshape(ir.n_wav, -1)
-    if cube.measure == "per_pixel":
-        density = density / ir.fp_grid.pixel_area
-    return matrix @ density.T
+    flux = integrate_footprints(cube, ir.collection_overlap)
+    if ir.layout.grid_kind == "square":
+        flux = flux[:, ir.lenslet_indices]
+    return flux.T
 
 
 class IFSRenderer(eqx.Module):
@@ -70,7 +55,7 @@ class IFSRenderer(eqx.Module):
             data.reshape(self.ir.det_shape),
             self.ir.detector_grid,
             (),
-            "per_pixel",
+            Measure.integral(),
             quantity,
             "nearest",
         )
@@ -91,15 +76,15 @@ class IFSRenderer(eqx.Module):
             data.reshape(ir.n_wav, *ir.lenslet_grid.shape),
             ir.lenslet_grid,
             ("wavelength",),
-            "per_pixel",
+            Measure.integral(),
             quantity,
             "nearest",
         )
 
     def channel_spectra(self, cube: Image):
         """Unpack a lenslet cube into (lenslet,band) integrals."""
-        if cube.grid != self.ir.lenslet_grid or cube.measure != "per_pixel":
-            raise ValueError("expected a per_pixel Image on the lenslet grid")
+        if cube.grid != self.ir.lenslet_grid or cube.measure != Measure.integral():
+            raise ValueError("expected an integral Image on the lenslet grid")
         if cube.leading_axes != ("wavelength",) or cube.data.shape[0] != self.ir.n_wav:
             raise ValueError("cube wavelength axis must match bands")
         return cube.data.reshape(self.ir.n_wav, -1)[:, self.ir.lenslet_indices].T
@@ -107,10 +92,10 @@ class IFSRenderer(eqx.Module):
     def _detector_data(self, detector):
         if (
             detector.grid != self.ir.detector_grid
-            or detector.measure != "per_pixel"
+            or detector.measure != Measure.integral()
             or detector.leading_axes
         ):
-            raise ValueError("expected a per_pixel detector Image without leading axes")
+            raise ValueError("expected an integral detector Image without leading axes")
         return detector.data
 
     @eqx.filter_jit
@@ -121,35 +106,15 @@ class IFSRenderer(eqx.Module):
             z.reshape(self.ir.n_channels, self.ir.n_wav), detector.quantity
         )
 
-    def _output_quantity(self, cube, output_quantity):
-        if cube.measure == "per_unit_area":
-            if output_quantity is None:
-                raise ValueError(
-                    "area integration changes density units; supply output_quantity"
-                )
-            return output_quantity
-        if output_quantity is not None and output_quantity != cube.quantity:
-            raise ValueError("per_pixel rendering preserves the input quantity")
-        return cube.quantity
-
     @eqx.filter_jit
-    def forward_spmv(self, cube: Image, *, output_quantity=None):
-        """Integrate cells then disperse to a per-pixel detector Image.
-
-        For a density input, output_quantity must name the area-integrated
-        unit (e.g. Jy for Jy/arcsec2). Per-pixel input units are preserved.
-        """
+    def forward_spmv(self, cube: Image):
+        """Integrate cells and disperse their flux onto the detector."""
         z = spatial_sample(cube, self.ir)
-        return self.detector_image(
-            self.H_mono @ z.ravel(), self._output_quantity(cube, output_quantity)
-        )
+        return self.detector_image(self.H_mono @ z.ravel(), cube.quantity)
 
     @eqx.filter_jit
-    def forward_streaming(self, cube: Image, *, output_quantity=None):
-        """Integrate cells then disperse with a per-band scatter-add scan.
-
-        output_quantity follows forward_spmv: required for density inputs.
-        """
+    def forward_streaming(self, cube: Image):
+        """Integrate cells and disperse with a per-band scatter-add scan."""
         ir = self.ir
         z = spatial_sample(cube, ir)
 
@@ -159,6 +124,4 @@ class IFSRenderer(eqx.Module):
 
         det0 = jnp.zeros(ir.det_shape[0] * ir.det_shape[1], dtype=z.dtype)
         detector, _ = jax.lax.scan(body, det0, jnp.arange(ir.n_wav))
-        return self.detector_image(
-            detector, self._output_quantity(cube, output_quantity)
-        )
+        return self.detector_image(detector, cube.quantity)

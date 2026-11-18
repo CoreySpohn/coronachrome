@@ -15,19 +15,16 @@ focal-plane spacing comes from the grid. For isotropic axis-aligned grids,
 lenslet pitch divided by that spacing. Scalar scale inspection raises for
 anisotropic or rotated source bases; rendering supports their full bases.
 
-`build_ir` clips each square lenslet cell against focal pixels by convex-polygon
-clipping on the host. `ir.collection_overlap` stores the resulting sparse COO
-matrix (cells by focal pixels) as static host tuples of indices and areas in
-arcsec squared. `spatial_sample(image, ir)` applies it with JAX: one sparse
-product per wavelength, batched across bands. No geometry is rebuilt during
-rendering, and no dense cell-by-focal-pixel matrix is allocated.
+The renderer prepares `hwoutils.grids.footprint_overlap` from the focal grid
+and the lenslet collection grids. Aligned cells use separable interval
+overlaps. Rotated cells use exact convex-polygon intersections. Rendering
+applies the stored weights to all wavelengths with JAX.
 
-Per-pixel values are divided by focal pixel area to obtain density;
-per-unit-area values are already densities. The overlap integral is exact up
-to floating-point roundoff for a piecewise-constant image (nearest
-reconstruction), including rotated square cells and clipped field edges.
-There is no edge renormalization; the density is zero outside the focal grid.
-Square cells that tile a field conserve its total flux to roundoff.
+Cell integrals contribute in proportion to the covered fraction of each
+focal pixel. Densities contribute in proportion to the covered area in
+their declared unit (grid units squared or steradians). Clipping at the
+field edge loses the uncovered flux. A complete tiling conserves total
+flux to floating-point roundoff.
 
 For `linear`, `cubic`, and `band_limited` declarations, collection approximates
 the declared continuous reconstruction by constant density in each pixel.
@@ -46,9 +43,7 @@ The measured convergence orders are 2.19 and 1.88. The finest grid achieves
 about 0.1% error while retaining sparse local collection; this motivates the
 approximation, but sharp or poorly sampled scenes require their own check.
 
-For density inputs, `forward_spmv` and `forward_streaming` require an explicit
-`output_quantity` for the integrated unit, for example `"Jy"` when the input
-quantity is `"Jy/arcsec2"`. Per-pixel input quantities are preserved.
+Both forward methods preserve the numerator unit in `Image.quantity`.
 Builds warn when cells extend beyond the source.
 
 A lambda/D grid must first call `grid.to_arcsec(wavelength_nm)` through its

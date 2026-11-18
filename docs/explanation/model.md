@@ -152,16 +152,16 @@ conditioning, so in practice it should be run under `x64`.
 
 ## Units and normalization
 
-The input cube contains band-integrated quantities, either per pixel or per
-arcsec squared, with units recorded by `Image.quantity`. Spatial sampling
-honours that measure. Disperser throughput is integrated at quadrature nodes
-inside H exactly once. Templates carry shape only. Surviving footprint pixels
+The input cube contains band-integrated quantities, with a numerator unit in
+`Image.quantity`. Spatial sampling integrates cell flux or densities per
+square grid unit or steradian according to `Image.measure`. H integrates the disperser
+throughput at the quadrature nodes exactly once. Templates carry shape only. Surviving footprint pixels
 are normalized at each node, so numerical footprint and detector-edge losses
 are still renormalized; they are not a physical capture-efficiency model.
 
 The forward operator does not apply detector QE. To handle wavelength-dependent
 yield correctly, assemble wavelength-resolved `PhotonRates` at quadrature nodes,
-apply `detector.electrons(rates, quadrature)`, and only then combine wavelengths
+apply `detector.electrons(rates)`, and only then combine wavelengths
 in a detector pixel. A band-integrated photon Image alone cannot reconstruct
 intra-band spectral structure for an arbitrary QE curve. Precomputed electron
 integrals can be rendered when they use the same within-band response assumption.

@@ -31,8 +31,7 @@ def detector_statistics(renderer, detector, electron_rates, plan):
     bands before the detector call: a dispersed detector pays noise once per
     physical pixel. Yield belongs upstream in detector.electrons.
     """
-    from dataclasses import fields
-
+    from hwoutils.spectral import Band
     from optixstuff.rates import ElectronRates
 
     shape = electron_rates.total().shape
@@ -40,13 +39,16 @@ def detector_statistics(renderer, detector, electron_rates, plan):
         raise ValueError("electron_rates must have shape (band,detector_y,detector_x)")
     if detector.shape != renderer.ir.det_shape:
         raise ValueError("detector shape must match the IR")
+    bands = electron_rates.bands
+    passband = Band(min(b.lo_nm for b in bands), max(b.hi_nm for b in bands))
     collapsed = ElectronRates(
+        (passband,),
         **{
-            f.name: jnp.broadcast_to(getattr(electron_rates, f.name), shape).sum(
+            name: jnp.broadcast_to(getattr(electron_rates, name), shape).sum(
                 axis=0, keepdims=True
             )
-            for f in fields(electron_rates)
-        }
+            for name in electron_rates.component_names()
+        },
     )
     mean, variance = detector.mean_and_variance(collapsed, plan)
     return renderer.detector_image(mean[0], "e"), renderer.detector_image(
@@ -117,8 +119,8 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     coordinates (so ``damping`` is relative to the unit-diagonal normal
     operator). ``weights`` is a per-detector-pixel weight (default uniform);
     pass ``1 / N`` (N the per-pixel noise variance) for noise-weighted
-    extraction. Returns a per_pixel lenslet Image of shape (n_wav, y, x). Differentiable
-    through the solve with numerically stable gradients.
+    extraction. Returns a cell-integrated lenslet Image of shape (n_wav, y, x).
+    Differentiable through the solve with numerically stable gradients.
 
     Precision and conditioning: the forward model and this solve run in the
     stack's native precision (float32 by default). A well-sampled extraction
@@ -133,7 +135,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
 
     Args:
         renderer: An ``IFSRenderer`` holding the dispersion operator.
-        detector: The per_pixel detector Image.
+        detector: The cell-integrated detector Image.
         weights: Per-detector-pixel weight (inverse noise variance), default
             uniform.
         damping: Tikhonov regularization on the equilibrated spectra, relative

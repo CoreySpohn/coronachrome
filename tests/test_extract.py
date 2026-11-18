@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from conftest import bands_at, sky_grid
+from hwoutils.grids import Measure
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -316,7 +317,8 @@ def test_detector_variance_one_lenslet_one_band():
     )
     # Two source-band contributions illuminate the same physical pixel.
     rates = ElectronRates(
-        planet=jnp.zeros((2, 3, 3)).at[0, 1, 1].set(3.0).at[1, 1, 1].set(2.0)
+        (Band(650, 660), Band(660, 670)),
+        planet=jnp.zeros((2, 3, 3)).at[0, 1, 1].set(3.0).at[1, 1, 1].set(2.0),
     )
     plan = FramePlan(4.0, 2)
     mean, variance = detector_statistics(r, det, rates, plan)
@@ -327,6 +329,6 @@ def test_detector_variance_one_lenslet_one_band():
     assert jnp.allclose(cov[0, 0, 0], 107.0, rtol=7e-15, atol=0)
     signal = r.detector_image(jnp.zeros((3, 3)).at[1, 1].set(40.0), "e")
     fitted = lstsq(r, signal, weights=weights)
-    assert fitted.grid == r.ir.lenslet_grid and fitted.measure == "per_pixel"
+    assert fitted.grid == r.ir.lenslet_grid and fitted.measure == Measure.integral()
     assert fitted.quantity == "e"
     assert jnp.allclose(fitted.data[0, 0, 0], 40.0, rtol=7e-15, atol=0)

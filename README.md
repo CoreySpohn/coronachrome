@@ -51,7 +51,7 @@ pip install coronachrome
 
 ```python
 import jax.numpy as jnp
-from hwoutils.grids import Image, PixelGrid, SkyOrientation
+from hwoutils.grids import Image, Measure, PixelGrid, SkyOrientation
 from optixstuff import LensletDisperser
 
 from coronachrome import IFSRenderer, build_ir, lstsq, spectral_grid
@@ -83,7 +83,7 @@ cube = Image(
     jnp.ones((len(bands), 64, 64)),
     fp_grid,
     ("wavelength",),
-    measure="per_pixel",
+    measure=Measure.integral(),
     quantity="phot/s",
     reconstruction="nearest",
 )

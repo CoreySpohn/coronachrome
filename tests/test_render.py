@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid, square_rectangle_area
+from hwoutils.grids import Measure
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -178,7 +179,7 @@ def test_hex_grid_pipeline_streaming_matches_spmv():
     )
     # Square collection cells retain area .2**2, despite axial output packing.
     density = focal_image(
-        jnp.full((5, 64, 64), 100.0), r.ir.fp_grid, measure="per_unit_area"
+        jnp.full((5, 64, 64), 100.0), r.ir.fp_grid, measure=Measure.density("grid")
     )
     assert jnp.allclose(spatial_sample(density, r.ir), 4.0, atol=2e-14, rtol=0)
     cube = jnp.sin(jnp.arange(5 * 64 * 64, dtype=float).reshape(5, 64, 64))
@@ -243,7 +244,7 @@ def test_spatial_sample_integrates_cell_area(n, grid_kind):
         data = jnp.ones((2, size, size)) * jnp.array([1.0, 2.0])[:, None, None]
         expected = areas[:, None] / 0.01 * np.array([1.0, 2.0])
         tol = 128 * np.finfo(float).eps
-        for measure, scale in (("per_pixel", 1), ("per_unit_area", 100)):
+        for measure, scale in ((Measure.integral(), 1), (Measure.density("grid"), 100)):
             z = spatial_sample(
                 focal_image(data * scale, ir.fp_grid, measure=measure), ir
             )

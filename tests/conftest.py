@@ -4,6 +4,7 @@ import importlib.util
 import os
 
 import jax
+from hwoutils.grids import Measure
 from hypothesis import settings
 
 # Released hwoutils versions may not include the optional budget plugin yet.
@@ -46,13 +47,19 @@ def sky_grid(shape, step=0.1, **kwargs):
     return PixelGrid.regular(shape, step, "arcsec", **kwargs)
 
 
-def focal_image(data, grid, *, reconstruction="nearest", measure="per_pixel"):
+def focal_image(data, grid, *, reconstruction="nearest", measure=None):
     """Explicit band-integrated test Image, including stacks of mode cubes."""
     from hwoutils.grids import Image
 
     axes = ("mode", "wavelength") if data.ndim == 4 else ("wavelength",)
-    quantity = "e/s" if measure == "per_pixel" else "e/s/arcsec^2"
-    return Image(data, grid, axes, measure, quantity, reconstruction)
+    return Image(
+        data,
+        grid,
+        axes,
+        Measure.integral() if measure is None else measure,
+        "e/s",
+        reconstruction,
+    )
 
 
 def square_rectangle_area(center, angle_rad, side, bounds):

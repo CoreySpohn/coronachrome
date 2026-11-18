@@ -4,7 +4,7 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 from conftest import bands_at, focal_image, sky_grid
-from hwoutils.grids import Frame, PixelGrid, SkyOrientation
+from hwoutils.grids import Frame, Measure, PixelGrid, SkyOrientation
 from hwoutils.spectral import Band, Transmission
 from optixstuff import TransmissiveElement
 from optixstuff.disperser import LensletDisperser
@@ -267,22 +267,19 @@ def test_throughput_scales_footprint_sums():
 
 
 def test_build_ir_spatial_footprint_is_flux_conserving():
-    """Fails if density is treated as pixel flux; 100 e/s/arcsec^2 * .04 = 4."""
+    """Fails if an angular footprint treats per-steradian data as per arcsec squared."""
     ir = _build()
-    z = spatial_sample(
-        focal_image(jnp.full((3, 32, 32), 100.0), ir.fp_grid, measure="per_unit_area"),
-        ir,
-    )
-    assert jnp.allclose(z, 4, atol=2e-14, rtol=0)
-    renderer = IFSRenderer(ir)
     image = focal_image(
-        jnp.full((3, 32, 32), 100.0), ir.fp_grid, measure="per_unit_area"
+        jnp.full((3, 32, 32), 100.0), ir.fp_grid, measure=Measure.density("sr")
     )
-    with pytest.raises(ValueError, match="output_quantity"):
-        renderer.forward_spmv(image)
-    detector = renderer.forward_spmv(image, output_quantity="e/s")
-    assert detector.quantity == "e/s" and detector.measure == "per_pixel"
-    assert jnp.allclose(detector.data.sum(), 432.0, rtol=2e-15, atol=0)
+    # One arcsecond spans pi / 648000 radians. Each lenslet is 0.2" square.
+    sr_per_arcsec2 = (jnp.pi / 648000.0) ** 2
+    z = spatial_sample(image, ir)
+    assert jnp.allclose(z, 4 * sr_per_arcsec2, rtol=7e-15, atol=0)
+    renderer = IFSRenderer(ir)
+    detector = renderer.forward_spmv(image)
+    assert detector.quantity == "e/s" and detector.measure == Measure.integral()
+    assert jnp.allclose(detector.data.sum(), 432 * sr_per_arcsec2, rtol=3e-15, atol=0)
     # lambda/D cannot cross the seam without an explicit Frame conversion.
     lod = PixelGrid.focal(32, 0.1, Frame(660, 6, "inscribed"))
     with pytest.raises(ValueError, match="Frame"):

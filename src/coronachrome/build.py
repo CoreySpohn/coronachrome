@@ -11,11 +11,10 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-from hwoutils.grids import PixelGrid
+from hwoutils.grids import PixelGrid, footprint_overlap
 from hwoutils.spectral import Quadrature
 from optixstuff.disperser import LensletDisperser
 
-from coronachrome._collection import cell_overlap
 from coronachrome.dispersion import lenslet_centroids
 from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
@@ -245,12 +244,7 @@ def _(
     collection_grids = layout.collection_grids(
         disperser.sky_pitch_arcsec, float(disperser.angle_rad), fp_grid.orientation
     )
-    channel_order = (
-        tuple(map(int, lenslet_indices.tolist()))
-        if layout.grid_kind == "square"
-        else tuple(range(layout.n_lenslets**2))
-    )
-    collection_overlap = cell_overlap(fp_grid, collection_grids, channel_order)
+    collection_overlap = footprint_overlap(fp_grid, collection_grids)
     fp_px_per_lenslet = disperser.sky_pitch_arcsec / fp_grid.pixel_area**0.5
     if fp_px_per_lenslet < 2:
         warnings.warn(

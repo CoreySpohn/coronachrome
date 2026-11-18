@@ -6,11 +6,10 @@ import equinox as eqx
 import jax.numpy as jnp
 import pytest
 from conftest import sky_grid
-from hwoutils.grids import PixelGrid
+from hwoutils.grids import PixelGrid, footprint_overlap
 from hwoutils.spectral import Band
 
 from coronachrome import LensletLayout, SpatialChannelIR
-from coronachrome._collection import cell_overlap
 
 
 def _ir():
@@ -26,7 +25,7 @@ def _ir():
         PixelGrid.regular((32, 32), 13e-6, "meter"),
         layout,
         (grid,),
-        cell_overlap(sky_grid((16, 16)), (grid,), (0, 2, 1, 3)),
+        footprint_overlap(sky_grid((16, 16)), (grid,)),
     )
 
 
