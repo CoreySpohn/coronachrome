@@ -64,9 +64,9 @@ each grid offset.
 
 ## Using template mode
 
-{class}`~coronachrome.PsfletPack` holds the arrays and validates the
-conventions at construction; {func}`~coronachrome.save_psflet_pack` and
-{func}`~coronachrome.load_psflet_pack` are the writer/reader pair. The pack
+`optixstuff.PsfletPack` holds the arrays and validates the
+conventions at construction; `optixstuff.save_psflet_pack` and
+`optixstuff.load_psflet_pack` are the writer/reader pair. The pack
 reaches {func}`~coronachrome.build_ir` either as an explicit argument or as a
 file reference on the descriptor (`LensletDisperser.psflet_pack_path`), so a
 pure-config hardware description stays possible:
@@ -74,7 +74,9 @@ pure-config hardware description stays possible:
 Requires user-supplied wavelengths, focal-plane shape, and disperser settings.
 
 ```python notest
-from coronachrome import analytic_psflet_pack, build_ir, save_psflet_pack
+from optixstuff import save_psflet_pack
+
+from coronachrome import analytic_psflet_pack, build_ir
 
 pack = analytic_psflet_pack("gaussian", jnp.array([0.7]), lam, psflet_ref_nm=660.0)
 save_psflet_pack("psflets.npz", pack)

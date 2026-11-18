@@ -4,17 +4,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
-from hwoutils.grids import PixelGrid
 from hwoutils.spectral import Band
 from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
+from optixstuff.psflet_pack import PsfletPack, save_psflet_pack
 
 from coronachrome.build import build_ir
 from coronachrome.templates import (
-    PsfletPack,
     analytic_psflet_pack,
-    load_psflet_pack,
-    save_psflet_pack,
     template_weights,
 )
 
@@ -44,100 +41,6 @@ def _gaussian_pack(lam, sigma=0.7, ref_nm=660.0, **kwargs):
     return analytic_psflet_pack(
         "gaussian", jnp.array([sigma]), lam, psflet_ref_nm=ref_nm, **kwargs
     )
-
-
-def test_pack_roundtrip(tmp_path):
-    """save/load round-trips every pack field, including provenance."""
-    lam = jnp.array([640.0, 660.0, 680.0])
-    centroids = jnp.zeros((1, 3, 2)).at[:, :, 0].set(1.5)
-    pack = _gaussian_pack(lam, centroids=centroids, meta_json='{"generator": "test"}')
-    path = tmp_path / "pack.npz"
-    save_psflet_pack(path, pack)
-    loaded = load_psflet_pack(path)
-    assert jnp.allclose(loaded.templates, pack.templates)
-    assert jnp.allclose(loaded.offsets, pack.offsets)
-    assert jnp.allclose(loaded.wavelengths_nm, pack.wavelengths_nm)
-    assert jnp.allclose(loaded.field_xy, pack.field_xy)
-    assert jnp.allclose(loaded.centroids, pack.centroids)
-    assert loaded.meta_json == pack.meta_json
-
-
-def test_pack_roundtrip_without_centroids(tmp_path):
-    """A pack without centroid corrections loads with centroids=None."""
-    pack = _gaussian_pack(jnp.array([640.0, 680.0]))
-    assert pack.centroids is None
-    path = tmp_path / "pack.npz"
-    save_psflet_pack(path, pack)
-    assert load_psflet_pack(path).centroids is None
-
-
-def test_physical_payload_roundtrip(tmp_path):
-    """Fails if physical payloads cannot serialize; exact array/metadata equality.
-
-    Serialization performs no arithmetic, so every payload field is lossless.
-    """
-    physicaloptix = pytest.importorskip("physicaloptix")
-
-    chain = physicaloptix.LensletChain(
-        jnp.ones((8, 8)),
-        PixelGrid.pupil(8),
-        pitch_lod_ref=0.5,
-        lam_ref_nm=1000.0,
-        micropupil_px=1.5,
-        n_tile=8,
-        n_mp=16,
-        n_stop=8,
-        mp_half_extent=2.0,
-        illumination="flat",
-    )
-    payload = physicaloptix.psflet_pack(
-        chain,
-        [900.0, 1100.0],
-        half_extent=1.0,
-        step=0.5,
-        n_quad=2,
-    )
-    path = tmp_path / "physical.npz"
-    save_psflet_pack(path, PsfletPack(**payload))
-    loaded = load_psflet_pack(path)
-    for name in ("templates", "offsets", "wavelengths_nm", "field_xy", "centroids"):
-        np.testing.assert_array_equal(getattr(loaded, name), payload[name])
-    assert loaded.meta_json == payload["meta_json"]
-
-
-def test_pack_validation_rejects_bad_shapes():
-    """Malformed packs fail at construction, not deep inside a build."""
-    lam = jnp.array([640.0, 680.0])
-    good = _gaussian_pack(lam)
-    with pytest.raises(ValueError, match="templates"):
-        PsfletPack(
-            templates=good.templates[0],
-            offsets=good.offsets,
-            wavelengths_nm=lam,
-            field_xy=good.field_xy,
-        )
-    with pytest.raises(ValueError, match="uniform"):
-        PsfletPack(
-            templates=good.templates[:, :, :3, :3],
-            offsets=jnp.array([0.0, 1.0, 3.0]),
-            wavelengths_nm=lam,
-            field_xy=good.field_xy,
-        )
-    with pytest.raises(ValueError, match="ascending"):
-        PsfletPack(
-            templates=good.templates,
-            offsets=good.offsets,
-            wavelengths_nm=lam[::-1],
-            field_xy=good.field_xy,
-        )
-    with pytest.raises(ValueError, match="centroids"):
-        PsfletPack(
-            templates=good.templates,
-            offsets=good.offsets,
-            wavelengths_nm=lam,
-            field_xy=good.field_xy,
-            centroids=jnp.zeros((2, 2, 2)),
-        )
 
 
 def test_build_splits_at_template_and_throughput_breaks():
@@ -352,15 +255,3 @@ def test_footprint_past_template_extent_warns():
             fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
             bands=bands_at(jnp.array([660.0])),
         )
-
-
-def test_loader_rejects_unknown_format(tmp_path):
-    """A pack file with an unknown format version fails loudly."""
-    pack = _gaussian_pack(jnp.array([640.0, 680.0]))
-    path = tmp_path / "pack.npz"
-    save_psflet_pack(path, pack)
-    data = dict(np.load(path, allow_pickle=False))
-    data["format_version"] = np.int64(99)
-    np.savez(path, **data)
-    with pytest.raises(ValueError, match="format"):
-        load_psflet_pack(path)
