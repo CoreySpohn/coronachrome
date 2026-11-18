@@ -5,7 +5,7 @@ extractor for the Habitable Worlds Observatory.
 
 `coronachrome` takes a multi-wavelength focal-plane `hwoutils.grids.Image` (for example from
 {mod}`coronagraphoto`) together with a hardware description (an
-{class}`optixstuff.OpticalPath` carrying a lenslet disperser), and produces the
+{class}`optixstuff.Instrument` carrying a lenslet disperser), and produces the
 dispersed IFS detector image: a field of per-lenslet micro-spectra, where each
 lenslet's light is spread into a short spectrum on the detector. It also inverts
 that forward model to recover per-lenslet spectra from a detector image, with
