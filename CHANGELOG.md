@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.0.0](https://github.com/CoreySpohn/coronachrome/compare/v1.1.0...v2.0.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* render through shared footprint overlaps and apply the steradian factor to radiance inputs
+* build lenslet quadratures from declared spectral breaks
+* remove rebin_channels; band rebinning is hwoutils.spectral.rebin_bands
+* **viz:** take colours from eyepiece
+* channels come from Band, dispersion from the disperser and lenslet layout from the geometric centre only
+* render and extract on shared grids, channel bands and the detector contract, with exact lenslet cell integrals
+
+### Features
+
+* render and extract on shared grids, channel bands and the detector contract, with exact lenslet cell integrals ([ddd6997](https://github.com/CoreySpohn/coronachrome/commit/ddd6997c84aa143b99d08b9a5b72603207159b60))
+
+
+### Bug Fixes
+
+* render through shared footprint overlaps and apply the steradian factor to radiance inputs ([fcebc3d](https://github.com/CoreySpohn/coronachrome/commit/fcebc3dbb954ab0d596e40b1cbb4ca5bc297b7e5))
+
+
+### Code Refactoring
+
+* build lenslet quadratures from declared spectral breaks ([ccdeb40](https://github.com/CoreySpohn/coronachrome/commit/ccdeb408d1e0c0b4fa5bfbe63f238c1be048a048))
+* channels come from Band, dispersion from the disperser and lenslet layout from the geometric centre only ([a95d381](https://github.com/CoreySpohn/coronachrome/commit/a95d38108cdbaffb975574902e941d0c50cdc7c9))
+* remove rebin_channels; band rebinning is hwoutils.spectral.rebin_bands ([4eac93f](https://github.com/CoreySpohn/coronachrome/commit/4eac93fbe959ec8dba268500c380d5f0991273e5))
+* **viz:** take colours from eyepiece ([58f8f67](https://github.com/CoreySpohn/coronachrome/commit/58f8f6762e4d4df95970ca7c9fa224c6d1253874))
+
 ## [1.1.0](https://github.com/CoreySpohn/coronachrome/compare/v1.0.0...v1.1.0) (2026-09-29)
 
 
