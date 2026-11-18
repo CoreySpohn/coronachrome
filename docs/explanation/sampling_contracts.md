@@ -70,8 +70,9 @@ bin integrals by overlap. For an Image it preserves spatial metadata. Full
 coverage conserves the integral to the floating-point floor; partial coverage
 loses the uncovered fraction. A source bin is assumed to have constant density.
 
-Every bin response is integrated by a `Quadrature` built from the Bands, split
-at tabulated throughput and template wavelengths. Nodes evaluate throughput,
+The throughput element and optional PSFlet pack each declare their interpolation
+breakpoints through `spectral_breaks_nm()`. The `Quadrature` splits the channel
+Bands at the union of those wavelengths. Its nodes evaluate throughput,
 dispersion, chromatic PSFlet shape and wavecal before the bin integral. The
 operator assumes constant spectral density inside each input band. Increase
 quadrature_order or refine Bands to study numerical convergence.

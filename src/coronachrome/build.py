@@ -12,7 +12,7 @@ import warnings
 import jax
 import jax.numpy as jnp
 from hwoutils.grids import PixelGrid
-from hwoutils.spectral import Quadrature, spectral_knots
+from hwoutils.spectral import Quadrature
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome._collection import cell_overlap
@@ -231,15 +231,14 @@ def _(
     bands = tuple(bands)
     lam = jnp.asarray([band.geometric_center_nm for band in bands])
     pack = None
+    models = [disperser.throughput_element]
     if disperser.psflet_kind == "template":
         pack = _resolve_psflet_pack(disperser, psflet_pack)
         _validate_pack_for_band(
             pack, jnp.asarray([b.lo_nm for b in bands] + [b.hi_nm for b in bands]), half
         )
-    knots = spectral_knots(disperser.throughput_element).tolist()
-    if pack is not None:
-        knots.extend(pack.wavelengths_nm.tolist())
-    quadrature = Quadrature.build(bands, knots, quadrature_order)
+        models.append(pack)
+    quadrature = Quadrature.build(bands, *models, order=quadrature_order)
     lenslet_grid, lenslet_indices = layout.image_geometry(
         disperser.sky_pitch_arcsec, float(disperser.angle_rad), fp_grid.orientation
     )
@@ -306,9 +305,9 @@ def _(
     total = g.sum(axis=-1, keepdims=True)
     g = g / jnp.clip(total, 1e-12, None)
     throughput = disperser.throughput(nodes).reshape(quadrature.nodes_nm.shape)
-    # Integrate a unit bin-integrated spectrum: density = 1 / band width.
-    weights = quadrature.weights_nm / jnp.asarray([b.width_nm for b in bands])[:, None]
-    det_vals = jnp.einsum("cwqp,wq->cwp", g, weights * throughput)
+    # Mean response per detector pixel for constant spectral density in a band.
+    response = g.transpose(1, 2, 0, 3) * throughput[:, :, None, None]
+    det_vals = quadrature.mean(response).transpose(1, 0, 2)
     det_rows = jnp.clip((py * nx + px).astype(jnp.int32), 0, ny * nx - 1)
     if bool(jnp.any((total[..., 0] <= 1e-12) & (quadrature.weights_nm > 0)[None])):
         warnings.warn(

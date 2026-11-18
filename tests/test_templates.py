@@ -5,6 +5,8 @@ import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
 from hwoutils.grids import PixelGrid
+from hwoutils.spectral import Band
+from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -136,6 +138,50 @@ def test_pack_validation_rejects_bad_shapes():
             field_xy=good.field_xy,
             centroids=jnp.zeros((2, 2, 2)),
         )
+
+
+def test_build_splits_at_template_and_throughput_breaks():
+    """Fails if template or throughput breaks are omitted from the two-node rule.
+
+    The right pixel has a unit-height triangular response peaking at 625 nm.
+    Throughput is one up to 650 nm, then falls linearly to zero at 700 nm.
+    In normalized band coordinates x = (lambda - 600) / 100, the red rolloff
+    removes integral(4/3 * (1-x) * (2*x-1), x=.5..1) = 1/18 from the
+    triangle area 1/2. The two nonzero pixels sum to the mean throughput 3/4.
+    """
+
+    class Filter(AbstractUniformElement):
+        def spectral_breaks_nm(self) -> np.ndarray:
+            return np.array([650.0])
+
+        def get_throughput(self, wavelength_nm):
+            return jnp.minimum(1.0, (700.0 - wavelength_nm) / 50.0)
+
+    templates = jnp.zeros((1, 3, 3, 3))
+    templates = templates.at[0, (0, 2), 1, 1].set(1).at[0, 1, 1, 2].set(1)
+    pack = PsfletPack(
+        templates,
+        jnp.arange(-1, 2),
+        jnp.array([600.0, 625.0, 700.0]),
+        jnp.zeros((1, 2)),
+    )
+    ir = build_ir(
+        _disp(
+            1,
+            psflet_kind="template",
+            dispersion_coeffs=jnp.zeros(1),
+            throughput_element=Filter(),
+            detector_shape=(9, 9),
+        ),
+        (Band(600, 700),),
+        sky_grid((16, 16)),
+        half=1,
+        psflet_pack=pack,
+        quadrature_order=2,
+    )
+    expected = np.zeros(9)
+    expected[4:6] = [11 / 36, 4 / 9]
+    np.testing.assert_allclose(ir.det_vals[0, 0], expected, rtol=0, atol=2e-15)
 
 
 def test_template_mode_parity_with_gaussian():

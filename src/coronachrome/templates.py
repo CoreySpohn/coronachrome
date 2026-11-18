@@ -54,6 +54,10 @@ class PsfletPack(eqx.Module):
     centroids: Array | None = eqx.field(converter=_optional_asarray, default=None)
     meta_json: str = eqx.field(static=True, default="")
 
+    def spectral_breaks_nm(self) -> np.ndarray:
+        """Return the wavelengths where template and centroid interpolation changes."""
+        return np.asarray(self.wavelengths_nm)
+
     def __check_init__(self):
         """Validate shapes and grid conventions at construction (eager only)."""
         if (
