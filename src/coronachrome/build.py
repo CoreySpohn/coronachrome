@@ -303,7 +303,7 @@ def _(
     response = g.transpose(1, 2, 0, 3) * throughput[:, :, None, None]
     det_vals = quadrature.mean(response).transpose(1, 0, 2)
     det_rows = jnp.clip((py * nx + px).astype(jnp.int32), 0, ny * nx - 1)
-    if bool(jnp.any((total[..., 0] <= 1e-12) & (quadrature.weights_nm > 0)[None])):
+    if bool(jnp.any((total[..., 0] <= 1e-12) & quadrature.active[None])):
         warnings.warn(
             "(channel, wavelength) footprints fell off the detector", stacklevel=2
         )
