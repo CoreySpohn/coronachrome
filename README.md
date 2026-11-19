@@ -104,7 +104,7 @@ cell/pixel overlap; smooth reconstructions, including band-limited images,
 use that approximation (see the sampling contracts). An input in lambda/D must
 convert its grid through its `Frame` before rendering. Extraction preserves
 the detector quantity, so electron counts produce extracted electron counts.
-Use `detector_statistics` and `extraction_weights` with `ElectronRates` and a
+Use `detector_statistics` and `extraction_weights` with electron `Rates` and a
 `FramePlan` for count statistics; detector yield belongs in `detector.electrons`
 before wavelength contributions are combined.
 

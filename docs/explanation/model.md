@@ -136,7 +136,7 @@ statistically complete:
 `forward_spmv` preserves the input quantity. For electron count observations,
 noise comes from the optixstuff detector's `mean_and_variance` and `draw`, with
 an observer-supplied `FramePlan`. `detector_statistics` and `extraction_weights`
-sum `ElectronRates` source bands before calling detector moments, so each
+sum electron `Rates` source bands before calling detector moments, so each
 physical detector pixel pays dark, CIC and read noise once. They return Images
 of counts, variance, and inverse variance. No local detector noise law is used.
 
@@ -160,7 +160,7 @@ are normalized at each node, so numerical footprint and detector-edge losses
 are still renormalized; they are not a physical capture-efficiency model.
 
 The forward operator does not apply detector QE. To handle wavelength-dependent
-yield correctly, assemble wavelength-resolved `PhotonRates` at quadrature nodes,
+yield correctly, assemble wavelength-resolved photon `Rates` at quadrature nodes,
 apply `detector.electrons(rates)`, and only then combine wavelengths
 in a detector pixel. A band-integrated photon Image alone cannot reconstruct
 intra-band spectral structure for an arbitrary QE curve. Precomputed electron

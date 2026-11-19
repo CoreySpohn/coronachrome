@@ -286,7 +286,7 @@ def test_detector_variance_one_lenslet_one_band():
     """
     from optixstuff.detector import Detector
     from optixstuff.exposure import FramePlan
-    from optixstuff.rates import ElectronRates
+    from optixstuff.rates import Rates
     from optixstuff.spectral import Band
 
     from coronachrome import detector_statistics, extraction_weights
@@ -316,8 +316,9 @@ def test_detector_variance_one_lenslet_one_band():
         excess_noise_factor_sq=2.0,
     )
     # Two source-band contributions illuminate the same physical pixel.
-    rates = ElectronRates(
+    rates = Rates(
         (Band(650, 660), Band(660, 670)),
+        "electron",
         planet=jnp.zeros((2, 3, 3)).at[0, 1, 1].set(3.0).at[1, 1, 1].set(2.0),
     )
     plan = FramePlan(4.0, 2)

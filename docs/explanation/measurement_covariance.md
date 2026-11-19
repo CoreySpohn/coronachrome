@@ -125,7 +125,7 @@ sigma = jnp.sqrt(jnp.diag(marginal))  # honest per-wavelength error bars
 gap = 0.5 * jnp.linalg.slogdet(unmodeled)[1] - 0.5 * jnp.linalg.slogdet(marginal)[1]
 ```
 
-`electron_rates` is an optixstuff ElectronRates record on the detector and
+`electron_rates` is an optixstuff electron Rates record on the detector and
 `plan` is a FramePlan. Source bands are collapsed before detector moments so
 read, dark and CIC noise are paid once per detector pixel. Count variances
 produce count covariance; extraction does not silently convert counts to rates.

@@ -31,7 +31,7 @@ def detector_statistics(renderer, detector, electron_rates, plan):
     bands before the detector call: a dispersed detector pays noise once per
     physical pixel. Yield belongs upstream in detector.electrons.
     """
-    from optixstuff.rates import ElectronRates
+    from optixstuff.rates import Rates
     from optixstuff.spectral import Band
 
     shape = electron_rates.total().shape
@@ -41,8 +41,9 @@ def detector_statistics(renderer, detector, electron_rates, plan):
         raise ValueError("detector shape must match the IR")
     bands = electron_rates.bands
     passband = Band(min(b.lo_nm for b in bands), max(b.hi_nm for b in bands))
-    collapsed = ElectronRates(
+    collapsed = Rates(
         (passband,),
+        "electron",
         **{
             name: jnp.broadcast_to(getattr(electron_rates, name), shape).sum(
                 axis=0, keepdims=True
@@ -205,7 +206,7 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
             uniform). For a true detector-noise covariance whose error bars
             scale with wavelength, use :func:`extraction_weights`, based on
             ``detector.mean_and_variance(electron_rates, plan)``
-            evaluated on ElectronRates of the total dispersed electrons/s and a
+            evaluated on electron Rates of the total dispersed electrons/s and a
             FramePlan. Collapse source bands before this call so detector noise
             is paid once per physical detector pixel.
         channels: 1-D array of lenslet channel indices (the spaxels of interest).
