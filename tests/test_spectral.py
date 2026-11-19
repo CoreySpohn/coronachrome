@@ -29,7 +29,7 @@ def test_n_nyquist_channels_exact_resolution_element():
 
 def test_n_nyquist_channels_validates_band():
     """A reversed (or empty) band raises instead of returning a bogus count."""
-    with pytest.raises(ValueError, match="lam_max_nm"):
+    with pytest.raises(ValueError, match="high_nm"):
         n_nyquist_channels(50.0, 700.0, 600.0)
 
 
@@ -37,9 +37,9 @@ def test_spectral_grid_composes_count_and_edges():
     """spectral_grid combines the channel count and edge/center construction."""
     edges = spectral_grid(140.0, 855.0, 1045.0)
     assert len(edges) == 29
-    assert edges[0].lo_nm == 855.0 and edges[-1].hi_nm == 1045.0
-    assert all(a.hi_nm == b.lo_nm for a, b in pairwise(edges))
-    edges = jnp.asarray([edges[0].lo_nm] + [b.hi_nm for b in edges])
+    assert edges[0].low_nm == 855.0 and edges[-1].high_nm == 1045.0
+    assert all(a.high_nm == b.low_nm for a, b in pairwise(edges))
+    edges = jnp.asarray([edges[0].low_nm] + [b.high_nm for b in edges])
 
 
 def test_spectral_grid_oversample_nests():
@@ -47,5 +47,5 @@ def test_spectral_grid_oversample_nests():
     edges = spectral_grid(140.0, 855.0, 1045.0)
     edges_hi = spectral_grid(140.0, 855.0, 1045.0, oversample=6)
     assert len(edges_hi) == 29 * 6
-    assert all(a.lo_nm == b.lo_nm for a, b in zip(edges_hi[::6], edges, strict=True))
-    assert edges_hi[-1].hi_nm == edges[-1].hi_nm
+    assert all(a.low_nm == b.low_nm for a, b in zip(edges_hi[::6], edges, strict=True))
+    assert edges_hi[-1].high_nm == edges[-1].high_nm

@@ -40,7 +40,7 @@ def detector_statistics(renderer, detector, electron_rates, plan):
     if detector.shape != renderer.ir.det_shape:
         raise ValueError("detector shape must match the IR")
     bands = electron_rates.bands
-    passband = Band(min(b.lo_nm for b in bands), max(b.hi_nm for b in bands))
+    passband = Band(min(b.low_nm for b in bands), max(b.high_nm for b in bands))
     collapsed = Rates(
         (passband,),
         "electron",

@@ -234,7 +234,9 @@ def _(
     if disperser.psflet_kind == "template":
         pack = _resolve_psflet_pack(disperser, psflet_pack)
         _validate_pack_for_band(
-            pack, jnp.asarray([b.lo_nm for b in bands] + [b.hi_nm for b in bands]), half
+            pack,
+            jnp.asarray([b.low_nm for b in bands] + [b.high_nm for b in bands]),
+            half,
         )
         models.append(pack)
     quadrature = Quadrature.build(bands, *models, order=quadrature_order)

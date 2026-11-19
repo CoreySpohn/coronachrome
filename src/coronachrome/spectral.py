@@ -23,7 +23,7 @@ from optixstuff.spectral import Band
 _CEIL_TOL = 1e-9
 
 
-def n_nyquist_channels(resolving_power, lam_min_nm, lam_max_nm):
+def n_nyquist_channels(resolving_power, low_nm, high_nm):
     """Number of Nyquist spectral channels: ``ceil(R ln(lam2 / lam1))``.
 
     One channel per resolution element of a spectrograph with resolving power
@@ -33,21 +33,21 @@ def n_nyquist_channels(resolving_power, lam_min_nm, lam_max_nm):
 
     Args:
         resolving_power: Resolving power ``R`` (constant across the band).
-        lam_min_nm: Band minimum wavelength [nm].
-        lam_max_nm: Band maximum wavelength [nm].
+        low_nm: Band minimum wavelength [nm].
+        high_nm: Band maximum wavelength [nm].
 
     Returns:
         Channel count as a Python int (>= 1).
     """
     if resolving_power <= 0.0:
         raise ValueError("resolving_power must be positive")
-    if lam_max_nm <= lam_min_nm:
-        raise ValueError("lam_max_nm must exceed lam_min_nm")
-    n_reselts = resolving_power * math.log(lam_max_nm / lam_min_nm)
+    if high_nm <= low_nm:
+        raise ValueError("high_nm must exceed low_nm")
+    n_reselts = resolving_power * math.log(high_nm / low_nm)
     return max(1, math.ceil(n_reselts - _CEIL_TOL))
 
 
-def spectral_grid(resolving_power, lam_min_nm, lam_max_nm, oversample=1):
+def spectral_grid(resolving_power, low_nm, high_nm, oversample=1):
     """Return one Band per log-spaced spectral channel.
 
     oversample subdivides every Nyquist band, preserving shared edges exactly.
@@ -58,6 +58,6 @@ def spectral_grid(resolving_power, lam_min_nm, lam_max_nm, oversample=1):
     oversample = index(oversample)
     if oversample < 1:
         raise ValueError("oversample must be positive")
-    n = n_nyquist_channels(resolving_power, lam_min_nm, lam_max_nm)
-    base = Band(lam_min_nm, lam_max_nm).channels(n, "log")
+    n = n_nyquist_channels(resolving_power, low_nm, high_nm)
+    base = Band(low_nm, high_nm).channels(n, "log")
     return tuple(sub for band in base for sub in band.channels(oversample, "log"))

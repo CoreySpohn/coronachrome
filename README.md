@@ -72,7 +72,7 @@ disperser = LensletDisperser(
     sky_pitch_arcsec=0.014,
 )
 
-bands = spectral_grid(resolving_power=50.0, lam_min_nm=620.0, lam_max_nm=700.0)
+bands = spectral_grid(resolving_power=50.0, low_nm=620.0, high_nm=700.0)
 fp_grid = PixelGrid.regular(
     (64, 64), 0.007, "arcsec", orientation=SkyOrientation(pa_y_deg=0, parity=-1)
 )

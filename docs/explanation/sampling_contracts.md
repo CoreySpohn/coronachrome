@@ -52,13 +52,13 @@ Each cube has one fixed angular grid and retains its `SkyOrientation`.
 
 ## Spectral channels
 
-`Band(lo_nm, hi_nm).channels(n, "log")` returns `Band` intervals with shared
+`Band(low_nm, high_nm).channels(n, "log")` returns `Band` intervals with shared
 log-spaced edges, including both outer endpoints. Each channel's
 `Band.geometric_center_nm` is its reference wavelength in nm;
 `Band.center_nm` is the arithmetic centre.
 
-`spectral_grid(R, lo_nm, hi_nm, oversample=1)` returns Bands, with
-`n = ceil(R*log(hi_nm/lo_nm))`. Oversampling subdivides each base Band, preserving
+`spectral_grid(R, low_nm, high_nm, oversample=1)` returns Bands, with
+`n = ceil(R*log(high_nm/low_nm))`. Oversampling subdivides each base Band, preserving
 its edges exactly.
 `optixstuff.spectral.rebin_bands(values, src_bands, dst_bands, axis=0)` apportions
 bin integrals by overlap. For an Image it preserves spatial metadata. Full
