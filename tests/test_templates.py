@@ -6,7 +6,7 @@ import pytest
 from conftest import bands_at, sky_grid
 from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
-from optixstuff.psflet_pack import PsfletPack, save_psflet_pack
+from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack, save_psflet_pack
 from optixstuff.spectral import Band, merge_tolerance_nm
 
 from coronachrome.build import build_ir
@@ -67,6 +67,7 @@ def test_build_splits_at_template_and_throughput_breaks():
         jnp.arange(-1, 2),
         jnp.array([600.0, 625.0, 700.0]),
         jnp.zeros((1, 2)),
+        template_origin=TEMPLATE_ORIGIN,
     )
     ir = build_ir(
         _disp(
@@ -241,6 +242,7 @@ def test_nearest_field_anchor_selects_template():
         offsets=narrow.offsets,
         wavelengths_nm=narrow.wavelengths_nm,
         field_xy=jnp.array([[-1.5, 0.0], [1.5, 0.0]]),
+        template_origin=TEMPLATE_ORIGIN,
     )
     disp = _disp(4, psflet_kind="template", angle_rad=0.0)
     ir = build_ir(
@@ -295,6 +297,7 @@ def test_one_wavelength_pack_builds_with_and_without_centroids():
         single.offsets,
         jnp.array([659.0, 661.0]),
         single.field_xy,
+        template_origin=TEMPLATE_ORIGIN,
     )
     disp = _disp(4, psflet_kind="template")
     kwargs = dict(
@@ -312,6 +315,7 @@ def test_one_wavelength_pack_builds_with_and_without_centroids():
         single.wavelengths_nm,
         single.field_xy,
         centroids=jnp.zeros((1, 1, 2)).at[:, :, 0].set(2.0),
+        template_origin=TEMPLATE_ORIGIN,
     )
     ir_shift = build_ir(disp, psflet_pack=shifted, **kwargs)
     nx = disp.detector_shape[1]

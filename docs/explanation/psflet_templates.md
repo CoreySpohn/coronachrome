@@ -44,17 +44,28 @@ extrapolate outside the tabulated range. A pack tabulated at one wavelength is
 monochromatic: it is accepted only for a band at that wavelength (both band
 edges within the wavelength tolerance of it) and refused for any wider band.
 
-## Pack format (npz, `format_version = 1`)
+## Pack format (npz, `format_version = 2`)
 
 | field | shape | meaning |
 |---|---|---|
-| `format_version` | scalar int | must be 1 |
+| `format_version` | scalar integer (a float or array tag is refused) | must be 2 |
 | `templates` | `(n_field, n_lam, n_off, n_off)` | pixel-integrated PSFlet response: entry `[f, l, iy, ix]` is the flux falling in a unit detector pixel whose center sits at offset `(dy, dx) = (offsets[iy], offsets[ix])` px from the PSFlet centroid |
+| `template_origin` | string | must be `centroid`: the template is centered on its own centroid, not on the geometric origin of the lenslet. A pack without the declaration, or declaring another origin, is refused |
 | `offsets` | `(n_off,)` | uniform, ascending pixel-offset axis, shared by both plane axes |
 | `wavelengths_nm` | `(n_lam,)` | ascending tabulation wavelengths |
 | `field_xy` | `(n_field, 2)` | field-anchor positions in lenslet-index coordinates; each lenslet uses its nearest anchor's templates |
 | `centroids` | `(n_field, n_lam, 2)`, optional | `(dx, dy)` pixel corrections to the dispersion-model centroid per anchor and wavelength, the wavecal residual |
 | `meta_json` | string, optional | provenance (generator, configuration); stored verbatim, never interpreted |
+
+Format 1 packs, and format 2 packs without `template_origin`, are refused
+with a message to regenerate them. Earlier physical-optics writers stored the
+template about the geometric origin and put the displacement only in the
+centroid; reading such a template under the current convention would apply the
+displacement twice, so the declaration is required rather than assumed. A
+writer built for the older convention fails at pack construction and must be
+upgraded together with its reader. `physicaloptix.ifs.psflet_template` now runs a
+host-side centroid iteration, so it takes concrete wavelengths and offsets and
+cannot be traced by `jit` or `vmap`; call it eagerly at pack-generation time.
 
 Two normalization facts make packs easy to emit. Templates carry **shape
 only**: the build renormalizes every footprint to unit flux, so the absolute
