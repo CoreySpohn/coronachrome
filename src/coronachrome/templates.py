@@ -17,7 +17,7 @@ per-wavelength tabulation.
 
 import jax
 import jax.numpy as jnp
-from optixstuff.psflet_pack import PsfletPack
+from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack
 
 from coronachrome.psflet import gaussian_psflet, moffat_psflet
 
@@ -83,6 +83,7 @@ def analytic_psflet_pack(
         offsets=offsets,
         wavelengths_nm=lam,
         field_xy=anchors,
+        template_origin=TEMPLATE_ORIGIN,
         centroids=centroids,
         meta_json=meta_json,
     )

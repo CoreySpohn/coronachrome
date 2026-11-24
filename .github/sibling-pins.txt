@@ -6,4 +6,5 @@
 # After a sibling is released and on PyPI: delete its line here. When the sibling branch is
 # merged first, replace the branch with the merge commit on main until the release lands.
 # The file is empty (comments only) once PyPI carries every declared floor.
-optixstuff @ git+https://github.com/CoreySpohn/optixstuff@fit-posterior
+optixstuff @ git+https://github.com/CoreySpohn/optixstuff@ax16
+# optixstuff is pinned to ax16 (PSFlet pack format 2, declared template origin) until that branch merges; then restore fit-posterior or the merge commit.
