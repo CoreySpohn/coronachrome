@@ -255,3 +255,41 @@ def test_footprint_past_template_extent_warns():
             fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
             bands=bands_at(jnp.array([660.0])),
         )
+
+
+def test_one_wavelength_pack_builds_with_and_without_centroids():
+    """A pack tabulated at one wavelength is constant in wavelength.
+
+    Truth: its IR equals the IR of a two-wavelength pack whose planes are the
+    same, to float round-off, and a +2 px centroid correction shifts the
+    traces by two pixels, so the single-point grid is read through its array
+    accessor like a multi-wavelength one.
+    """
+    single = _gaussian_pack(jnp.array([660.0]))
+    assert len(single.wavelengths_nm) == 1
+    double = PsfletPack(
+        jnp.broadcast_to(single.templates, (1, 2, *single.templates.shape[2:])),
+        single.offsets,
+        jnp.array([659.0, 661.0]),
+        single.field_xy,
+    )
+    disp = _disp(4, psflet_kind="template")
+    kwargs = dict(
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)), bands=bands_at(jnp.array([660.0]))
+    )
+    ir_single = build_ir(disp, psflet_pack=single, **kwargs)
+    ir_double = build_ir(disp, psflet_pack=double, **kwargs)
+    assert jnp.allclose(ir_single.det_vals, ir_double.det_vals, rtol=0, atol=1e-12)
+    shifted = PsfletPack(
+        single.templates,
+        single.offsets,
+        single.wavelengths_nm,
+        single.field_xy,
+        centroids=jnp.zeros((1, 1, 2)).at[:, :, 0].set(2.0),
+    )
+    ir_shift = build_ir(disp, psflet_pack=shifted, **kwargs)
+    nx = disp.detector_shape[1]
+    x0 = (ir_single.det_rows % nx) * ir_single.det_vals
+    x2 = (ir_shift.det_rows % nx) * ir_shift.det_vals
+    mean_shift = (x2.sum(axis=2) - x0.sum(axis=2)) / ir_single.det_vals.sum(axis=2)
+    assert jnp.allclose(mean_shift, 2.0, atol=0.05)

@@ -21,7 +21,7 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "quick"))
 jax.config.update("jax_enable_x64", True)
 
 
-def bands_at(wavelengths_nm, width_nm=1e-4):
+def bands_at(wavelengths_nm, width_nm=1e-3):
     """Tiny explicit Bands with the requested geometric reference wavelengths.
 
     These monochromatic-limit fixtures separate geometry/profile tests from

@@ -48,9 +48,12 @@ def _resolve_psflet_pack(disperser, psflet_pack):
 
 def _validate_pack_for_band(pack, lam, half):
     """Reject template extrapolation; warn when the footprint outruns the pack."""
-    lam_lo = float(pack.wavelengths_nm[0])
-    lam_hi = float(pack.wavelengths_nm[-1])
-    if float(lam.min()) < lam_lo or float(lam.max()) > lam_hi:
+    pack_nm = pack.wavelengths_nm.values
+    lam_lo = float(pack_nm[0])
+    lam_hi = float(pack_nm[-1])
+    # A one-wavelength pack is constant in wavelength: nothing is extrapolated.
+    one = pack_nm.size == 1
+    if not one and (float(lam.min()) < lam_lo or float(lam.max()) > lam_hi):
         raise ValueError(
             f"requested band [{float(lam.min()):.6g}, {float(lam.max()):.6g}] nm "
             f"extends beyond the pack's tabulated range [{lam_lo:.6g}, "
@@ -120,12 +123,15 @@ def _placement_centroids(disperser, positions, lam, pack):
     field_idx = nearest_field_idx(pack, positions)
     if pack.centroids is not None:
         # Per-anchor (dx, dy) wavecal corrections, interpolated to the
-        # requested wavelengths, applied before footprint placement.
+        # requested wavelengths, applied before footprint placement. A
+        # one-wavelength pack is constant (jnp.interp holds its end value).
+        pack_nm = pack.wavelengths_nm.array()
+
         def interp_corr(anchor_corr):
             return jnp.stack(
                 [
-                    jnp.interp(lam, pack.wavelengths_nm, anchor_corr[:, 0]),
-                    jnp.interp(lam, pack.wavelengths_nm, anchor_corr[:, 1]),
+                    jnp.interp(lam, pack_nm, anchor_corr[:, 0]),
+                    jnp.interp(lam, pack_nm, anchor_corr[:, 1]),
                 ],
                 axis=-1,
             )

@@ -105,9 +105,9 @@ def _blend_planes(pack, wavelength_nm):
     lies inside the tabulated range; the blend weight is clipped so exact
     endpoints stay exact.
     """
-    if pack.wavelengths_nm.shape[0] == 1:
+    if len(pack.wavelengths_nm) == 1:
         return pack.templates[:, 0]
-    lam_grid = pack.wavelengths_nm
+    lam_grid = pack.wavelengths_nm.array()
     i = jnp.clip(
         jnp.searchsorted(lam_grid, wavelength_nm, side="right") - 1,
         0,
