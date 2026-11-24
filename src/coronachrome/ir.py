@@ -1,12 +1,26 @@
 """Grid geometry and sparse dispersion footprints of the IFS operator."""
 
+import dataclasses
+
 import equinox as eqx
 import jax.numpy as jnp
+from hwoutils.leaves import as_leaf
 from jax import Array
 from optixstuff.grids import CellOverlap, PixelGrid
 from optixstuff.spectral import Band
 
 from coronachrome.grids import LensletLayout
+
+
+def _leaf_overlap(overlap):
+    """Store the overlap weights as strong leaves; indices stay integers."""
+
+    def leaves(group):
+        return None if group is None else tuple(as_leaf(a) for a in group)
+
+    return dataclasses.replace(
+        overlap, axes=leaves(overlap.axes), sparse=leaves(overlap.sparse)
+    )
 
 
 class SpatialChannelIR(eqx.Module):
@@ -22,7 +36,7 @@ class SpatialChannelIR(eqx.Module):
     layout: LensletLayout = eqx.field(static=True)
     collection_grids: tuple[PixelGrid, ...] = eqx.field(static=True)
 
-    collection_overlap: CellOverlap
+    collection_overlap: CellOverlap = eqx.field(converter=_leaf_overlap)
 
     @property
     def n_channels(self):
