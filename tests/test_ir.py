@@ -53,9 +53,10 @@ def test_rejects_wrong_n_channels():
 
 @pytest.mark.parametrize("form", ["sparse", "axes"])
 def test_overlap_weights_are_strong_leaves_under_x32(form):
-    """Store the collection overlap's host weights as strong leaves.
+    """Fails if the IR holds NumPy or weakly typed collection overlap weights.
 
-    Weights are float32 and integer indices stay int32. Truth source: the leaf
+    The overlap arrives from optixstuff's footprint_overlap as strong leaves:
+    weights are float32 and integer indices stay int32. Truth source: the leaf
     rule; dtypes are exact, so there is no tolerance.
     """
     with jax.enable_x64(False):
