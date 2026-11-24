@@ -5,12 +5,18 @@ import ineedvalidation as vv
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from conftest import bands_at, sky_grid
+from optixstuff.detector import Detector
 from optixstuff.disperser import LensletDisperser
+from optixstuff.exposure import FramePlan
 from optixstuff.grids import Measure
+from optixstuff.rates import Rates
+from optixstuff.spectral import Band, Quadrature
 
 from coronachrome.build import build_ir
 from coronachrome.extract import (
+    detector_statistics,
     lstsq,
     matched_filter,
     spectrum_covariance,
@@ -26,7 +32,7 @@ def _dense_normal(r, weights):
     return hd.T @ (w[:, None] * hd)
 
 
-def _renderer(n=2, n_wav=5, fp=(32, 32)):
+def _renderer(n=2, n_bands=5, fp=(32, 32)):
     disp = LensletDisperser(
         pitch_m=174e-6,
         sky_pitch_arcsec=0.2,
@@ -45,15 +51,15 @@ def _renderer(n=2, n_wav=5, fp=(32, 32)):
     # Use linspace over a wide range so adjacent PSFlets are well-separated
     # in pixel space; 9 channels over 620-700 nm packs them too tightly for
     # a matched-filter test (off-diagonal H^T H ~ 50% of diagonal).
-    lam = jnp.linspace(580.0, 740.0, n_wav)
+    lam = jnp.linspace(580.0, 740.0, n_bands)
     ir = build_ir(disp, fp_grid=sky_grid(fp, 0.2 / (2.0)), bands=bands_at(lam))
-    return IFSRenderer(ir), n_wav
+    return IFSRenderer(ir), n_bands
 
 
 def test_matched_filter_correlates_with_truth():
     """The matched filter is strongly correlated with the injected spectra."""
-    r, n_wav = _renderer()
-    z_true = jax.random.uniform(jax.random.PRNGKey(1), (r.ir.n_channels, n_wav))
+    r, n_bands = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(1), (r.ir.n_channels, n_bands))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     z_hat = r.channel_spectra(
         matched_filter(
@@ -61,15 +67,15 @@ def test_matched_filter_correlates_with_truth():
             r.detector_image(detector, "e"),
         )
     )
-    assert z_hat.shape == (r.ir.n_channels, n_wav)
+    assert z_hat.shape == (r.ir.n_channels, n_bands)
     c = jnp.corrcoef(z_true.reshape(-1), z_hat.reshape(-1))[0, 1]
     assert float(c) > 0.9
 
 
 def test_lstsq_recovers_injected_spectra():
     """Noiseless lstsq recovers an injected per-lenslet spectrum near-exactly."""
-    r, n_wav = _renderer()
-    z_true = jax.random.uniform(jax.random.PRNGKey(0), (r.ir.n_channels, n_wav))
+    r, n_bands = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(0), (r.ir.n_channels, n_bands))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     z_hat = r.channel_spectra(
         lstsq(
@@ -77,14 +83,14 @@ def test_lstsq_recovers_injected_spectra():
             r.detector_image(detector, "e"),
         )
     )
-    assert z_hat.shape == (r.ir.n_channels, n_wav)
+    assert z_hat.shape == (r.ir.n_channels, n_bands)
     assert jnp.allclose(z_hat, z_true, atol=1e-4)
 
 
 def test_weighted_lstsq_recovers_spectra():
     """Per-detector-pixel weighting still recovers the noiseless spectrum."""
-    r, n_wav = _renderer()
-    z_true = jax.random.uniform(jax.random.PRNGKey(2), (r.ir.n_channels, n_wav))
+    r, n_bands = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(2), (r.ir.n_channels, n_bands))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     weights = 1.0 / jnp.clip(detector.reshape(-1), 1e-3, None)
     z_hat = r.channel_spectra(
@@ -95,7 +101,7 @@ def test_weighted_lstsq_recovers_spectra():
 
 def test_lstsq_is_differentiable():
     """Verify lstsq has finite gradients w.r.t. the detector (lineax stable grads)."""
-    r, _n_wav = _renderer()
+    r, _n_bands = _renderer()
     detector = jnp.ones(r.ir.det_shape)
 
     def loss(d):
@@ -124,14 +130,14 @@ def test_lstsq_robust_to_operator_scale():
     operator down here reproduces that small-eigenvalue regime in float64; column
     equilibration inside lstsq keeps the solve well-scaled and scale-invariant.
     """
-    r, n_wav = _renderer()
+    r, n_bands = _renderer()
     s = 1e-6  # shrink the operator so the un-equilibrated normal eigenvalues ~ s^2
     rs = eqx.tree_at(
         lambda m: (m.ir.det_vals, m.H_mono.data),
         r,
         (r.ir.det_vals * s, r.H_mono.data * s),
     )
-    z_true = jax.random.uniform(jax.random.PRNGKey(7), (rs.ir.n_channels, n_wav))
+    z_true = jax.random.uniform(jax.random.PRNGKey(7), (rs.ir.n_channels, n_bands))
     detector = (rs.H_mono @ z_true.reshape(-1)).reshape(rs.ir.det_shape)
     # Data is ~s here, so converge on the relative tolerance only (atol=0).
     z_hat = rs.channel_spectra(
@@ -147,9 +153,9 @@ def test_lstsq_damping_matches_dense_tikhonov():
     Solves z = D (D H^T W H D + damping I)^-1 D H^T W y, with D the column
     equilibration; the closed form is the reference.
     """
-    r, n_wav = _renderer()
-    ncw = r.ir.n_channels * n_wav
-    z_true = jax.random.uniform(jax.random.PRNGKey(5), (r.ir.n_channels, n_wav))
+    r, n_bands = _renderer()
+    ncw = r.ir.n_channels * n_bands
+    z_true = jax.random.uniform(jax.random.PRNGKey(5), (r.ir.n_channels, n_bands))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     y = np.asarray(detector).reshape(-1)
     damping = 1e-2
@@ -160,7 +166,7 @@ def test_lstsq_damping_matches_dense_tikhonov():
     dmat = d[:, None] * (hd.T @ hd) * d[None, :]  # D H^T H D (unit diagonal)
     rhs = d * (hd.T @ y)
     zp = np.linalg.solve(dmat + damping * np.eye(ncw), rhs)
-    z_ref = (d * zp).reshape(r.ir.n_channels, n_wav)
+    z_ref = (d * zp).reshape(r.ir.n_channels, n_bands)
 
     z_hat = r.channel_spectra(
         lstsq(r, r.detector_image(detector, "e"), damping=damping)
@@ -170,8 +176,8 @@ def test_lstsq_damping_matches_dense_tikhonov():
 
 def test_lstsq_damping_shrinks_solution():
     """Positive damping biases the recovered spectrum toward zero (Tikhonov)."""
-    r, n_wav = _renderer()
-    z_true = jax.random.uniform(jax.random.PRNGKey(6), (r.ir.n_channels, n_wav))
+    r, n_bands = _renderer()
+    z_true = jax.random.uniform(jax.random.PRNGKey(6), (r.ir.n_channels, n_bands))
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     z0 = r.channel_spectra(lstsq(r, r.detector_image(detector, "e"), damping=0.0))
     z1 = r.channel_spectra(lstsq(r, r.detector_image(detector, "e"), damping=1e-1))
@@ -181,10 +187,10 @@ def test_lstsq_damping_shrinks_solution():
 
 def test_lstsq_recovers_sharp_dip_spaxel():
     """A sharp absorption dip (O2-like) at one spaxel is recovered by lstsq."""
-    r, n_wav = _renderer(n_wav=15)
+    r, n_bands = _renderer(n_bands=15)
     ch = r.ir.n_channels // 2
-    spec = jnp.ones(n_wav).at[11].set(0.05)  # deep dip at wavelength index 11
-    z_true = jnp.ones((r.ir.n_channels, n_wav)).at[ch].set(spec)
+    spec = jnp.ones(n_bands).at[11].set(0.05)  # deep dip at wavelength index 11
+    z_true = jnp.ones((r.ir.n_channels, n_bands)).at[ch].set(spec)
     detector = (r.H_mono @ z_true.reshape(-1)).reshape(r.ir.det_shape)
     z_hat = r.channel_spectra(
         lstsq(
@@ -198,7 +204,7 @@ def test_lstsq_recovers_sharp_dip_spaxel():
 
 def test_spectrum_covariance_matches_dense_block():
     """Per-channel covariance equals the dense (H^T W H)^-1 channel block."""
-    r, n_wav = _renderer()
+    r, n_bands = _renderer()
     n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
     weights = jax.random.uniform(
         jax.random.PRNGKey(3), (n_det,), minval=0.1, maxval=2.0
@@ -209,27 +215,27 @@ def test_spectrum_covariance_matches_dense_block():
         spectrum_covariance(r, weights=weights, channels=chans, rtol=1e-11, atol=1e-11)
     )
     for i, ch in enumerate(np.asarray(chans)):
-        base = int(ch) * n_wav
-        ref = ainv[base : base + n_wav, base : base + n_wav]
+        base = int(ch) * n_bands
+        ref = ainv[base : base + n_bands, base : base + n_bands]
         assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
 
 
 def test_spectrum_covariance_many_channels_matches_dense():
     """The lax.map path matches dense (H^T W H)^-1 blocks across many channels."""
-    r, n_wav = _renderer()
+    r, n_bands = _renderer()
     chans = jnp.array([0, 1, 2, r.ir.n_channels - 1])
     ainv = np.linalg.inv(_dense_normal(r, None))
     cov = np.asarray(spectrum_covariance(r, channels=chans, rtol=1e-11, atol=1e-11))
-    assert cov.shape == (len(chans), n_wav, n_wav)
+    assert cov.shape == (len(chans), n_bands, n_bands)
     for i, ch in enumerate(np.asarray(chans)):
-        base = int(ch) * n_wav
-        ref = ainv[base : base + n_wav, base : base + n_wav]
+        base = int(ch) * n_bands
+        ref = ainv[base : base + n_bands, base : base + n_bands]
         assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
 
 
 def test_spectrum_errorbars_is_sqrt_diag():
     """Error bars equal sqrt of the covariance block diagonal."""
-    r, _n_wav = _renderer()
+    r, _n_bands = _renderer()
     chans = jnp.array([r.ir.n_channels // 2])
     cov = spectrum_covariance(r, channels=chans, rtol=1e-11, atol=1e-11)
     err = spectrum_errorbars(r, channels=chans)
@@ -238,7 +244,7 @@ def test_spectrum_errorbars_is_sqrt_diag():
 
 def test_errorbars_scale_as_sqrt_noise():
     """Doubling the per-pixel noise variance scales error bars by sqrt(2)."""
-    r, _n_wav = _renderer()
+    r, _n_bands = _renderer()
     n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
     chans = jnp.array([r.ir.n_channels // 2])
     err_n1 = spectrum_errorbars(r, weights=None, channels=chans)  # N = 1
@@ -250,18 +256,18 @@ def test_errorbars_scale_as_sqrt_noise():
 
 def test_covariance_montecarlo_coverage():
     """Predicted covariance matches the empirical covariance of the GLS estimator."""
-    r, n_wav = _renderer()
+    r, n_bands = _renderer()
     ch = r.ir.n_channels // 2
     n_det = r.ir.det_shape[0] * r.ir.det_shape[1]
     hd = np.asarray(r.H_mono.todense())  # W = I here
     ainv = np.linalg.inv(hd.T @ hd)
     gls = ainv @ hd.T  # z_hat = G y
-    base = ch * n_wav
+    base = ch * n_bands
     rng = np.random.default_rng(0)
     clean = np.zeros(n_det)  # true spectra are zero; covariance is signal-independent
     draws = np.stack(
         [
-            (gls @ (clean + rng.standard_normal(n_det)))[base : base + n_wav]
+            (gls @ (clean + rng.standard_normal(n_det)))[base : base + n_bands]
             for _ in range(4000)
         ]
     )
@@ -284,12 +290,7 @@ def test_detector_variance_one_lenslet_one_band():
     mean=44.5 e; variance=2*44.5+2*9=107 e^2. GLS variance is 107.
     Tolerance is 32 eps for one scalar solve, not a noise realization.
     """
-    from optixstuff.detector import Detector
-    from optixstuff.exposure import FramePlan
-    from optixstuff.rates import Rates
-    from optixstuff.spectral import Band
-
-    from coronachrome import detector_statistics, extraction_weights
+    from coronachrome import extraction_weights
 
     disperser = LensletDisperser(
         pitch_m=130e-6,
@@ -333,3 +334,74 @@ def test_detector_variance_one_lenslet_one_band():
     assert fitted.grid == r.ir.lenslet_grid and fitted.measure == Measure.integral()
     assert fitted.quantity == "e"
     assert jnp.allclose(fitted.data[0, 0, 0], 40.0, rtol=7e-15, atol=0)
+
+
+@pytest.fixture(scope="module")
+def detector_setup():
+    """A shared detector and exposure for testing per-pixel statistics."""
+    renderer, _ = _renderer(n=1, n_bands=2, fp=(4, 4))
+    detector = Detector(
+        pixel_scale_arcsec=0.1,
+        shape=renderer.ir.det_shape,
+        dark_current_e_per_pixel_s=0.5,
+        read_noise_e_rms=3.0,
+    )
+    return renderer, detector, FramePlan(4.0, 2)
+
+
+@pytest.mark.parametrize(
+    ("kind", "message"),
+    [
+        ("photon", "photon"),
+        ("spectral", "integrate over the bands first"),
+        ("aperture", "n_pix"),
+        ("variance_aperture", "n_pix"),
+    ],
+)
+def test_detector_statistics_refuses_invalid_rates(detector_setup, kind, message):
+    """The detector accepts per-pixel band-integrated electrons."""
+    renderer, detector, plan = detector_setup
+    bands = renderer.ir.bands
+    sampling = Quadrature.build(bands) if kind == "spectral" else bands
+    leading = sampling.nodes_nm.shape if kind == "spectral" else (len(bands),)
+    rates = Rates(
+        sampling,
+        "photon" if kind == "photon" else "electron",
+        planet=jnp.ones((*leading, *detector.shape)),
+        n_pix=1 if kind == "aperture" else None,
+        variance=Rates(bands, "electron", n_pix=1)
+        if kind == "variance_aperture"
+        else None,
+    )
+    with pytest.raises(ValueError, match=message):
+        detector_statistics(renderer, detector, rates, plan)
+
+
+def test_detector_statistics_sums_variance_components(detector_setup):
+    """Detector moments equal hand-collapsed float64 moments bit for bit."""
+    renderer, detector, plan = detector_setup
+    bands = renderer.ir.bands
+    signal = np.arange(2 * np.prod(detector.shape), dtype=np.float64).reshape(
+        2, *detector.shape
+    )
+    variance_planet = np.array([0.25, 1.5])[:, None, None]
+    rates = Rates(
+        bands,
+        "electron",
+        planet=signal,
+        variance=Rates(bands, "electron", planet=variance_planet, thermal=0.5),
+    )
+    passband = (Band(bands[0].low_nm, bands[-1].high_nm),)
+    variance_sum = np.broadcast_to(variance_planet + 0.5, signal.shape).sum(
+        0, keepdims=True
+    )
+    hand = Rates(
+        passband,
+        "electron",
+        planet=signal.sum(0, keepdims=True),
+        variance=Rates(passband, "electron", planet=variance_sum),
+    )
+    expected_mean, expected_variance = detector.mean_and_variance(hand, plan)
+    mean, variance = detector_statistics(renderer, detector, rates, plan)
+    np.testing.assert_array_equal(mean.data, expected_mean[0], strict=True)
+    np.testing.assert_array_equal(variance.data, expected_variance[0], strict=True)

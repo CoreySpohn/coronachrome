@@ -1,7 +1,7 @@
 """Spectral extraction from a dispersed IFS detector image.
 
 Inverts the dispersion operator H_mono (detector -> per-lenslet spectra
-z, shape (n_channels, n_wav)). Linear tier: a matched filter, a noise-weighted
+z, shape (n_channels, n_bands)). Linear tier: a matched filter, a noise-weighted
 least-squares solve (a lineax conjugate-gradient solve on the normal
 equations, matrix-free, with stable gradients), and the
 GLS covariance of that solve for per-wavelength error bars. The regularized
@@ -27,29 +27,61 @@ from coronachrome.render import spatial_sample
 def detector_statistics(renderer, detector, electron_rates, plan):
     """Detector count mean/variance Images using the shared FramePlan contract.
 
-    electron_rates fields are (band,y,x) detected electrons/s. Sum source
-    bands before the detector call: a dispersed detector pays noise once per
-    physical pixel. Yield belongs upstream in detector.electrons.
+    Source bands illuminate the same physical pixels. Sum the signal and any
+    supplied variance over bands before applying detector noise once per pixel.
+
+    Args:
+        renderer: Renderer defining the detector grid.
+        detector: Detector providing the count mean and variance.
+        electron_rates: Band-integrated per-pixel electron rates with shape
+            (band, detector_y, detector_x) and optional variance rates.
+        plan: FramePlan specifying exposure time and number of reads.
+
+    Returns:
+        Detector Images of the count mean in electrons and variance in
+        electrons squared.
+
+    Raises:
+        ValueError: Rates have the wrong carrier, are spectral, carry aperture
+            weights on the signal or variance, or disagree with detector geometry.
     """
     from optixstuff.rates import Rates
     from optixstuff.spectral import Band
 
+    if electron_rates.carrier != "electron":
+        raise ValueError(
+            f"expected electron rates, got carrier {electron_rates.carrier!r}"
+        )
+    if electron_rates.spectral:
+        raise ValueError("spectral electron rates: integrate over the bands first")
+    variance_rates = electron_rates.variance
+    if electron_rates.n_pix is not None or (
+        variance_rates is not None and variance_rates.n_pix is not None
+    ):
+        raise ValueError("n_pix is undefined for per-pixel detector statistics")
     shape = electron_rates.total().shape
     if len(shape) != 3 or shape[1:] != renderer.ir.det_shape:
         raise ValueError("electron_rates must have shape (band,detector_y,detector_x)")
     if detector.shape != renderer.ir.det_shape:
         raise ValueError("detector shape must match the IR")
     bands = electron_rates.bands
-    passband = Band(min(b.low_nm for b in bands), max(b.high_nm for b in bands))
-    collapsed = Rates(
-        (passband,),
-        "electron",
-        **{
-            name: jnp.broadcast_to(getattr(electron_rates, name), shape).sum(
-                axis=0, keepdims=True
-            )
-            for name in electron_rates.component_names()
-        },
+    passband = (Band(min(b.low_nm for b in bands), max(b.high_nm for b in bands)),)
+
+    def collapse(record, variance=None):
+        return Rates(
+            passband,
+            record.carrier,
+            variance=variance,
+            **{
+                name: jnp.broadcast_to(getattr(record, name), shape).sum(
+                    axis=0, keepdims=True
+                )
+                for name in record.component_names()
+            },
+        )
+
+    collapsed = collapse(
+        electron_rates, None if variance_rates is None else collapse(variance_rates)
     )
     mean, variance = detector.mean_and_variance(collapsed, plan)
     return renderer.detector_image(mean[0], "e"), renderer.detector_image(
@@ -73,7 +105,7 @@ def _weight_data(renderer, weights):
 
 
 def matched_filter(renderer, detector):
-    """Matched-filter lenslet Image, shape (n_wav, y, x).
+    """Matched-filter lenslet Image, shape (n_bands, y, x).
 
     Returns ``(H^T y)`` normalized by the per-(channel, wavelength) column
     sum-of-squares, which for this operator equals
@@ -82,8 +114,8 @@ def matched_filter(renderer, detector):
     """
     num = renderer.channel_spectra(
         renderer.adjoint(detector)
-    )  # (n_channels, n_wav) = (H^T y) reshaped
-    colnorm2 = (renderer.ir.det_vals**2).sum(axis=2)  # (n_channels, n_wav)
+    )  # (n_channels, n_bands) = (H^T y) reshaped
+    colnorm2 = (renderer.ir.det_vals**2).sum(axis=2)  # (n_channels, n_bands)
     return renderer.channel_cube(
         num / jnp.clip(colnorm2, 1e-12, None), detector.quantity
     )
@@ -115,12 +147,12 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     """Noise-weighted least-squares spectra via a lineax CG solve (matrix-free).
 
     Solves ``min_z || sqrt(w) * (H_mono z - y) ||^2 + damping * || z_eq ||^2``
-    where ``z`` is the flattened (n_channels, n_wav) spectra, ``y`` is the
+    where ``z`` is the flattened (n_channels, n_bands) spectra, ``y`` is the
     flattened detector, and ``z_eq`` is ``z`` in the column-equilibrated
     coordinates (so ``damping`` is relative to the unit-diagonal normal
     operator). ``weights`` is a per-detector-pixel weight (default uniform);
     pass ``1 / N`` (N the per-pixel noise variance) for noise-weighted
-    extraction. Returns a cell-integrated lenslet Image of shape (n_wav, y, x).
+    extraction. Returns a cell-integrated lenslet Image of shape (n_bands, y, x).
     Differentiable through the solve with numerically stable gradients.
 
     Precision and conditioning: the forward model and this solve run in the
@@ -150,7 +182,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
         Extracted Image on the lenslet sky grid, retaining detector.quantity.
     """
     ir = renderer.ir
-    ncw = ir.n_channels * ir.n_wav
+    ncw = ir.n_channels * ir.n_bands
     h_mono = renderer.H_mono
     y = renderer._detector_data(detector).reshape(-1)
     w, d = _equilibration(renderer, weights)
@@ -173,21 +205,21 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     solver = lx.Normal(lx.CG(rtol=rtol, atol=atol))
     sol = lx.linear_solve(operator, rhs, solver=solver)
     return renderer.channel_cube(
-        (d * sol.value).reshape(ir.n_channels, ir.n_wav), detector.quantity
+        (d * sol.value).reshape(ir.n_channels, ir.n_bands), detector.quantity
     )
 
 
 def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1e-6):
     """Per-channel GLS covariance blocks of the extracted spectrum.
 
-    For each requested lenslet ``channel``, returns the ``(n_wav, n_wav)``
+    For each requested lenslet ``channel``, returns the ``(n_bands, n_bands)``
     covariance block ``[(H^T W H)^-1]_kk`` of the noise-weighted least-squares
     spectrum (the same estimator as :func:`lstsq`), with ``W = diag(weights)``.
     This is the Gauss-Markov / Cramer-Rao covariance; it captures intra-spectrum
     wavelength correlations from trace cross-talk, and its diagonal gives the
     per-wavelength error bars (see :func:`spectrum_errorbars`).
 
-    Matrix-free: for each channel it runs ``n_wav`` symmetric-positive-definite
+    Matrix-free: for each channel it runs ``n_bands`` symmetric-positive-definite
     CG solves against the same weight-equilibrated normal operator as
     :func:`lstsq`, so it never materializes ``H^T W H`` and scales to large IFS
     grids when only a few spaxels are of interest. The channels and their unit
@@ -214,11 +246,11 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
         atol: CG absolute tolerance.
 
     Returns:
-        Covariance blocks of shape ``(len(channels), n_wav, n_wav)``.
+        Covariance blocks of shape ``(len(channels), n_bands, n_bands)``.
     """
     ir = renderer.ir
-    n_wav = ir.n_wav
-    ncw = ir.n_channels * n_wav
+    n_bands = ir.n_bands
+    ncw = ir.n_channels * n_bands
     h_mono = renderer.H_mono
     dtype = h_mono.data.dtype
     w, d = _equilibration(renderer, weights)
@@ -238,8 +270,8 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
         return lx.linear_solve(operator, e, solver=lx.CG(rtol=rtol, atol=atol)).value
 
     def block_for_channel(ch):
-        cols = ch * n_wav + jnp.arange(n_wav)
-        # xp[j] = (D H^T W H D)^-1 e_{cols[j]} ; (n_wav, ncw)
+        cols = ch * n_bands + jnp.arange(n_bands)
+        # xp[j] = (D H^T W H D)^-1 e_{cols[j]} ; (n_bands, ncw)
         xp = jax.lax.map(solve_unit, cols)
         # (equilibrated inverse) block [i, j] = xp[j][cols[i]]
         block_p = xp[:, cols].T
@@ -267,7 +299,7 @@ def amplitude_basis(template, ir):
     spectrally scaled template.
 
     Args:
-        template: Focal-plane Image ``(n_wav, ny, nx)`` of the source's spatial
+        template: Focal-plane Image ``(n_bands, ny, nx)`` of the source's spatial
             distribution per wavelength, in the units the amplitudes are
             wanted in (normalize each plane to unit sum for amplitudes that
             mean "total rate at this wavelength").
@@ -275,10 +307,10 @@ def amplitude_basis(template, ir):
             contraction.
 
     Returns:
-        Basis of shape ``(n_wav, n_channels, n_wav)``.
+        Basis of shape ``(n_bands, n_channels, n_bands)``.
     """
-    z = spatial_sample(template, ir)  # (n_channels, n_wav)
-    eye = jnp.eye(ir.n_wav, dtype=z.dtype)
+    z = spatial_sample(template, ir)  # (n_channels, n_bands)
+    eye = jnp.eye(ir.n_bands, dtype=z.dtype)
     return z[None] * eye[:, None, :]
 
 
@@ -309,7 +341,7 @@ def _basis_fisher(renderer, cols, weights):
 
     Matrix-free in the detector dimension: each basis column is pushed through
     the weighted normal operator ``H^T W H`` (one forward and one adjoint spmv),
-    so the largest array ever formed is ``(n_basis, n_channels * n_wav)`` rather
+    so the largest array ever formed is ``(n_basis, n_channels * n_bands)`` rather
     than ``(n_detector_pixels, n_basis)``. The columns are looped with
     ``lax.map`` for the same bounded-memory reason as
     :func:`spectrum_covariance`.
@@ -371,10 +403,10 @@ def marginal_covariance(
 
     Args:
         renderer: An ``IFSRenderer`` holding the dispersion operator.
-        science: Channel-space science basis ``(n_science, n_channels, n_wav)``,
+        science: Channel-space science basis ``(n_science, n_channels, n_bands)``,
             for example from :func:`amplitude_basis`.
         nuisance: Channel-space nuisance basis ``(n_nuisance, n_channels,
-            n_wav)``, for example ``jax.vmap(spatial_sample, in_axes=(0, None))``
+            n_bands)``, for example ``jax.vmap(spatial_sample, in_axes=(0, None))``
             over a speckle mode cube stack. ``None`` (default) returns the
             conditional covariance.
         weights: Per-detector-pixel inverse noise variance ``1 / N`` (default
@@ -412,9 +444,9 @@ def unmodeled_covariance(renderer, science, nuisance, weights=None, nuisance_cov
 
     Args:
         renderer: An ``IFSRenderer`` holding the dispersion operator.
-        science: Channel-space science basis ``(n_science, n_channels, n_wav)``.
+        science: Channel-space science basis ``(n_science, n_channels, n_bands)``.
         nuisance: Channel-space nuisance basis ``(n_nuisance, n_channels,
-            n_wav)``.
+            n_bands)``.
         weights: Per-detector-pixel inverse noise variance (default uniform).
         nuisance_cov: Prior covariance of the nuisance coefficients (matrix or
             1-D per-mode variance). Required: the inflation is unbounded under
@@ -434,7 +466,7 @@ def spectrum_errorbars(renderer, weights=None, channels=None, rtol=1e-6, atol=1e
     """Per-wavelength 1-sigma error bars of the extracted spectrum.
 
     ``sqrt`` of the diagonal of :func:`spectrum_covariance`, shape
-    ``(len(channels), n_wav)``. With ``weights = 1 / N`` these scale with
+    ``(len(channels), n_bands)``. With ``weights = 1 / N`` these scale with
     wavelength through the detector noise: the shot term of ``N`` is
     proportional to the dispersed source rate at each wavelength.
     """
