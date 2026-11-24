@@ -33,7 +33,7 @@ def _ir(overlap=None):
 def test_constructs():
     """A coherent IR carries bands and both physical grids."""
     ir = _ir()
-    assert ir.n_channels == 4 and ir.n_wav == 1
+    assert ir.n_channels == 4 and ir.n_bands == 1
     assert ir.det_shape == (32, 32)
 
 

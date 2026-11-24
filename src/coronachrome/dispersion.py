@@ -16,11 +16,11 @@ def lenslet_centroids(positions, scale, angle_rad, dispersion_offsets, det_shape
         positions: ``(n_lenslets, 2)`` lenslet (i, j) coordinates.
         scale: detector pixels per lenslet step (pitch / pixsize).
         angle_rad: interlace/rotation angle of the lenslet grid.
-        dispersion_offsets: ``(n_wav,)`` spectral-axis shifts [px].
+        dispersion_offsets: ``(n_samples,)`` spectral-axis shifts [px].
         det_shape: detector ``(ny, nx)``.
 
     Returns:
-        Tuple ``(xc, yc)``, each ``(n_lenslets, n_wav)``.
+        Tuple ``(xc, yc)``, each ``(n_lenslets, n_samples)``.
     """
     cos_a, sin_a = jnp.cos(angle_rad), jnp.sin(angle_rad)
     ii, jj = positions[:, 0], positions[:, 1]

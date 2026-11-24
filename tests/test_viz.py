@@ -335,7 +335,7 @@ def test_footprint_image_is_the_forward_operator_applied_to_unit_spectra(setup):
     result = viz.plot_traces(
         ir, disperser, LAM, channels=channels, floor=1e-30, vmin=1e-30
     )
-    z = jnp.zeros((ir.n_channels, ir.n_wav)).at[jnp.array(channels)].set(1.0)
+    z = jnp.zeros((ir.n_channels, ir.n_bands)).at[jnp.array(channels)].set(1.0)
     expected = (IFSRenderer(ir).H_mono @ z.reshape(-1)).reshape(DET_SHAPE)
     drawn = np.asarray(result.artists["image"].get_array())
     assert np.allclose(drawn, np.clip(np.asarray(expected), 1e-30, None))

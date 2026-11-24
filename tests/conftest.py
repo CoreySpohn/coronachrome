@@ -51,7 +51,7 @@ def focal_image(data, grid, *, reconstruction="nearest", measure=None):
     """Explicit band-integrated test Image, including stacks of mode cubes."""
     from optixstuff.grids import Image
 
-    axes = ("mode", "wavelength") if data.ndim == 4 else ("wavelength",)
+    axes = ("mode", "band") if data.ndim == 4 else ("band",)
     return Image(
         data,
         grid,

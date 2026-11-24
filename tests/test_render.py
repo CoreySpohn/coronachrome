@@ -9,13 +9,13 @@ import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid, square_rectangle_area
 from optixstuff.disperser import LensletDisperser
-from optixstuff.grids import Measure
+from optixstuff.grids import Image, Measure
 
 from coronachrome.build import build_ir
 from coronachrome.render import IFSRenderer, spatial_sample
 
 
-def _renderer(n=6, n_wav=5, fp=(64, 64), *, grid_kind="square", step=0.1):
+def _renderer(n=6, n_bands=5, fp=(64, 64), *, grid_kind="square", step=0.1):
     disp = LensletDisperser(
         pitch_m=174e-6,
         sky_pitch_arcsec=0.2,
@@ -31,15 +31,15 @@ def _renderer(n=6, n_wav=5, fp=(64, 64), *, grid_kind="square", step=0.1):
         psflet_kind="gaussian",
         detector_shape=(256, 256),
     )
-    lam = jnp.linspace(640.0, 680.0, n_wav)
+    lam = jnp.linspace(640.0, 680.0, n_bands)
     ir = build_ir(disp, fp_grid=sky_grid(fp, step), bands=bands_at(lam))
-    return IFSRenderer(ir), ir, fp, n_wav
+    return IFSRenderer(ir), ir, fp, n_bands
 
 
 def test_forward_spmv_shape_and_flux():
     """forward_spmv returns a detector-shaped map with positive total flux."""
-    r, ir, fp, n_wav = _renderer()
-    cube = jnp.ones((n_wav, fp[0], fp[1]))
+    r, ir, fp, n_bands = _renderer()
+    cube = jnp.ones((n_bands, fp[0], fp[1]))
     det = r.forward_spmv(focal_image(cube, r.ir.fp_grid)).data
     assert det.shape == ir.det_shape
     assert float(det.sum()) > 0.0
@@ -47,8 +47,8 @@ def test_forward_spmv_shape_and_flux():
 
 def test_h_mono_matches_spmv():
     """forward_spmv equals the spatial step followed by an H_mono matvec."""
-    r, ir, fp, n_wav = _renderer()
-    cube = jnp.ones((n_wav, fp[0], fp[1]))
+    r, ir, fp, n_bands = _renderer()
+    cube = jnp.ones((n_bands, fp[0], fp[1]))
     z = spatial_sample(focal_image(cube, ir.fp_grid), ir)
     direct = (r.H_mono @ z.reshape(-1)).reshape(ir.det_shape)
     assert jnp.allclose(direct, r.forward_spmv(focal_image(cube, r.ir.fp_grid)).data)
@@ -56,9 +56,9 @@ def test_h_mono_matches_spmv():
 
 def test_streaming_matches_spmv():
     """Streaming scatter-add forward equals the BCOO spmv forward."""
-    r, _ir, fp, n_wav = _renderer()
-    key_cube = jnp.arange(n_wav * fp[0] * fp[1], dtype=float).reshape(
-        n_wav, fp[0], fp[1]
+    r, _ir, fp, n_bands = _renderer()
+    key_cube = jnp.arange(n_bands * fp[0] * fp[1], dtype=float).reshape(
+        n_bands, fp[0], fp[1]
     )
     cube = jnp.sin(key_cube)
     assert jnp.allclose(
@@ -70,9 +70,9 @@ def test_streaming_matches_spmv():
 
 def test_adjoint_dot_product_identity():
     """The adjoint satisfies the inner-product identity <H z, y> == <z, H^T y>."""
-    r, ir, _fp, _n_wav = _renderer()
+    r, ir, _fp, _n_bands = _renderer()
     k1, k2 = jax.random.split(jax.random.PRNGKey(0))
-    z = jax.random.normal(k1, (ir.n_channels, ir.n_wav))
+    z = jax.random.normal(k1, (ir.n_channels, ir.n_bands))
     y = jax.random.normal(k2, ir.det_shape)
     hz = r.H_mono @ z.reshape(-1)
     hty = r.channel_spectra(r.adjoint(r.detector_image(y, "e/s")))
@@ -85,7 +85,7 @@ def test_adjoint_dot_product_identity():
 
 def test_forward_is_differentiable():
     """forward_spmv has a finite, nonzero gradient w.r.t. the input cube."""
-    r, ir, fp, n_wav = _renderer()
+    r, ir, fp, n_bands = _renderer()
     target = jnp.ones(ir.det_shape)
 
     def misfit(cube):
@@ -93,7 +93,7 @@ def test_forward_is_differentiable():
             (r.forward_spmv(focal_image(cube, r.ir.fp_grid)).data - target) ** 2
         )
 
-    cube0 = jnp.zeros((n_wav, fp[0], fp[1]))
+    cube0 = jnp.zeros((n_bands, fp[0], fp[1]))
     g = jax.grad(misfit)(cube0)
     assert g.shape == cube0.shape
     assert float(jnp.linalg.norm(g)) > 0.0
@@ -353,3 +353,38 @@ def test_band_limited_cell_integral_error():
     print("band_limited max relative cell errors:", errors)
     assert errors[1] < 0.01
     assert all(2.5 < a / b < 6 for a, b in pairwise(errors))
+
+
+def test_band_cube_round_trip():
+    """A band axis survives focal integration, dispersion and adjoint extraction."""
+    renderer, ir, fp, count = _renderer(n=1, n_bands=2, fp=(4, 4))
+    cube = focal_image(jnp.ones((count, *fp)), ir.fp_grid)
+    assert cube.leading_axes == ("band",)
+    spectra = spatial_sample(cube, ir)
+    packed = renderer.channel_cube(spectra, cube.quantity)
+    assert packed.leading_axes == ("band",)
+    np.testing.assert_array_equal(renderer.channel_spectra(packed), spectra)
+    extracted = renderer.adjoint(renderer.forward_spmv(cube))
+    assert extracted.leading_axes == ("band",)
+
+
+@pytest.mark.parametrize("lenslet_grid", [False, True])
+def test_monochromatic_axis_refused(lenslet_grid):
+    """Both focal and lenslet cubes distinguish band flux from spectral samples."""
+    renderer, ir, _, count = _renderer(n=1, n_bands=2, fp=(4, 4))
+    grid = ir.lenslet_grid if lenslet_grid else ir.fp_grid
+    cube = Image(
+        jnp.ones((count, *grid.shape)),
+        grid,
+        ("wavelength",),
+        Measure.integral(),
+        "e/s",
+        "nearest",
+    )
+    with pytest.raises(
+        ValueError, match=r"wavelength bands.*monochromatic wavelengths"
+    ):
+        if lenslet_grid:
+            renderer.channel_spectra(cube)
+        else:
+            spatial_sample(cube, ir)

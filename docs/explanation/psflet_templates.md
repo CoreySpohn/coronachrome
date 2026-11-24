@@ -68,7 +68,7 @@ host-side centroid iteration, so it takes concrete wavelengths and offsets and
 cannot be traced by `jit` or `vmap`; call it eagerly at pack-generation time.
 
 Two normalization facts make packs easy to emit. Templates carry **shape
-only**: the build renormalizes every footprint to unit flux, so the absolute
+only**: the build normalizes the full footprint before detector clipping, so the absolute
 scale of a plane is irrelevant, and per-wavelength throughput belongs on the
 descriptor's throughput element, not in the template amplitudes. Offsets are
 pixel-center offsets of the *sampling pixel*, so a generator produces a plane

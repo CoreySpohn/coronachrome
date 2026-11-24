@@ -30,7 +30,7 @@ class SpatialChannelIR(eqx.Module):
         return self.layout.n_lenslets**2
 
     @property
-    def n_wav(self):
+    def n_bands(self):
         """Number of spectral bands."""
         return len(self.bands)
 
@@ -61,10 +61,10 @@ class SpatialChannelIR(eqx.Module):
             raise ValueError("bands must be a nonempty sequence of Band")
         if self.det_rows.shape != self.det_vals.shape or self.det_rows.ndim != 3:
             raise ValueError(
-                "det_rows and det_vals must share shape (n_channels,n_wav,n_psf)"
+                "det_rows and det_vals must share shape (n_channels,n_bands,n_psf)"
             )
-        if self.det_rows.shape[:2] != (self.n_channels, self.n_wav):
-            raise ValueError("footprints must match n_channels and n_wav")
+        if self.det_rows.shape[:2] != (self.n_channels, self.n_bands):
+            raise ValueError("footprints must match n_channels and n_bands")
         if self.lenslet_indices.shape != (self.n_channels,):
             raise ValueError("lenslet_indices must match n_channels")
         if self.fp_grid.unit != "arcsec" or self.lenslet_grid.unit != "arcsec":

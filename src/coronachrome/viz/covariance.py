@@ -3,7 +3,7 @@
 Takes a covariance array rather than an extraction call, so it draws any
 estimate: a within-lenslet block from
 :func:`coronachrome.spectrum_covariance`, or a larger matrix spanning several
-lenslets in the flattened ``k = channel * n_wav + wavelength`` order, where
+lenslets in the flattened ``k = channel * n_bands + band_index`` order, where
 overlapping traces put covariance between neighboring lenslets.
 """
 
@@ -44,7 +44,7 @@ def plot_channel_covariance(
     Cells are indexed by bin, not placed on a wavelength axis, because
     channel grids are log-spaced; ticks carry the bin-center wavelengths.
     A matrix larger than ``len(wavelengths_nm)`` is read as several lenslets
-    in the flattened ``channel * n_wav + wavelength`` order, and the lenslet
+    in the flattened ``channel * n_bands + band_index`` order, and the lenslet
     blocks are separated by lines and labeled with ``channel_labels``. Entry
     ``[i, j]`` is drawn at ``x = j``, ``y = i`` with the origin at the lower
     left, so lenslet ``b``'s own block is the ``b``-th diagonal block counted
@@ -52,11 +52,11 @@ def plot_channel_covariance(
     lenslet's diagonal block.
 
     Args:
-        cov: A square covariance ``(m * n_wav, m * n_wav)``, or a stack
-            ``(n_sel, n_wav, n_wav)`` of within-lenslet blocks (as returned by
+        cov: A square covariance ``(m * n_bands, m * n_bands)``, or a stack
+            ``(n_sel, n_bands, n_bands)`` of within-lenslet blocks (as returned by
             :func:`coronachrome.spectrum_covariance`) with ``block`` selecting
             one.
-        wavelengths_nm: ``(n_wav,)`` bin centers for the tick labels. None
+        wavelengths_nm: ``(n_bands,)`` bin centers for the tick labels. None
             labels bins by index and treats the matrix as one lenslet.
         block: Index into a stacked ``cov``.
         correlation: Draw the correlation coefficient (norm fixed to
@@ -81,17 +81,17 @@ def plot_channel_covariance(
     arr = np.asarray(cov, dtype=float)
     if arr.ndim == 3:
         if block is None:
-            raise ValueError("a stacked (n_sel, n_wav, n_wav) cov needs block=")
+            raise ValueError("a stacked (n_sel, n_bands, n_bands) cov needs block=")
         arr = arr[block]
     if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
         raise ValueError(f"cov must be square, got shape {arr.shape}")
     n = arr.shape[0]
-    n_wav = n if wavelengths_nm is None else int(np.size(wavelengths_nm))
-    if n % n_wav:
+    n_bands = n if wavelengths_nm is None else int(np.size(wavelengths_nm))
+    if n % n_bands:
         raise ValueError(
-            f"cov size {n} is not a multiple of the {n_wav} wavelength bins"
+            f"cov size {n} is not a multiple of the {n_bands} wavelength bins"
         )
-    n_blocks = n // n_wav
+    n_blocks = n // n_bands
     if channel_labels is not None and len(channel_labels) != n_blocks:
         raise ValueError(
             f"{len(channel_labels)} channel_labels for {n_blocks} lenslet blocks"
@@ -117,14 +117,14 @@ def plot_channel_covariance(
     ax = drawn.ax
     artists = dict(drawn.artists)
 
-    local = _tick_positions(n_wav, max_ticks)
-    ticks = np.concatenate([b * n_wav + local for b in range(n_blocks)])
+    local = _tick_positions(n_bands, max_ticks)
+    ticks = np.concatenate([b * n_bands + local for b in range(n_blocks)])
     if wavelengths_nm is None:
-        labels = [str(int(t % n_wav)) for t in ticks]
+        labels = [str(int(t % n_bands)) for t in ticks]
         axis_label = "wavelength bin"
     else:
         lam = np.asarray(wavelengths_nm, dtype=float)
-        labels = [f"{lam[t % n_wav]:.0f}" for t in ticks]
+        labels = [f"{lam[t % n_bands]:.0f}" for t in ticks]
         axis_label = "bin-center wavelength [nm]"
     ax.set_xticks(ticks, labels)
     ax.set_yticks(ticks, labels)
@@ -135,7 +135,7 @@ def plot_channel_covariance(
         edge = ep.style.neutral(0.5)
         lines = []
         for b in range(1, n_blocks):
-            pos = b * n_wav - 0.5
+            pos = b * n_bands - 0.5
             lines.append(ax.axhline(pos, color=edge, linewidth=1.0))
             lines.append(ax.axvline(pos, color=edge, linewidth=1.0))
         artists["lines"] = lines
@@ -152,8 +152,8 @@ def plot_channel_covariance(
             for b, name in enumerate(channel_labels):
                 texts.append(
                     ax.text(
-                        b * n_wav - 0.5 + 0.03 * n_wav,
-                        (b + 1) * n_wav - 0.5 - 0.03 * n_wav,
+                        b * n_bands - 0.5 + 0.03 * n_bands,
+                        (b + 1) * n_bands - 0.5 - 0.03 * n_bands,
                         str(name),
                         ha="left",
                         va="top",

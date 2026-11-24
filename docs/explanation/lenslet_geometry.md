@@ -73,8 +73,9 @@ a, b = 24, 31
 styles = ep.style.SourceStyles([f"lenslet {a}", f"lenslet {b}"])
 ```
 
-The build warns when cells or node footprints reach outside the available
-arrays. Clipped detector footprints remain normalized on the surviving pixels.
+The build warns when a collection cell extends past the focal grid or an entire
+PSFlet footprint falls off the detector at a quadrature node. Clipping removes
+the off-detector fraction of each footprint.
 
 ## Collection cells on the entrance plane
 
@@ -252,10 +253,9 @@ plt.show()
 ## Clipping at the detector edge
 
 A trace near the edge of the detector loses footprint pixels. The dashed line
-is the detector boundary; pixels beyond it receive nothing. coronachrome
-renormalizes each surviving footprint to unit flux, so the pixels that remain
-carry the whole bin flux rather than the fraction that physically reached the
-detector.
+marks the detector boundary. At each wavelength, coronachrome normalizes the
+full modeled footprint, then discards the light outside that boundary. The
+surviving pixels retain their original weights.
 
 ```{code-cell} ipython3
 fig, ax = plt.subplots(figsize=(6.0, 3.4), layout="constrained")
@@ -302,14 +302,14 @@ within-lenslet block is exact only where they are negligible.
 h = np.asarray(renderer.H_mono.todense())
 live = np.flatnonzero(np.abs(h).sum(axis=0) > 0)  # columns that reach the detector
 full = np.linalg.inv(h[:, live].T @ h[:, live])
-n_wav = len(lam)
-idx = np.r_[a * n_wav : (a + 1) * n_wav, b * n_wav : (b + 1) * n_wav]
+n_bands = len(lam)
+idx = np.r_[a * n_bands : (a + 1) * n_bands, b * n_bands : (b + 1) * n_bands]
 where = np.searchsorted(live, idx)
 assert np.array_equal(live[where], idx)
 pair = full[np.ix_(where, where)]
-assert np.allclose(pair[:n_wav, :n_wav], np.asarray(block[0]), rtol=1e-4, atol=1e-8)
+assert np.allclose(pair[:n_bands, :n_bands], np.asarray(block[0]), rtol=1e-4, atol=1e-8)
 sd = np.sqrt(np.diagonal(pair))
-cross = pair[:n_wav, n_wav:] / np.outer(sd[:n_wav], sd[n_wav:])
+cross = pair[:n_bands, n_bands:] / np.outer(sd[:n_bands], sd[n_bands:])
 print(f"largest cross-lenslet correlation: {np.abs(cross).max():.1e}")
 
 fig, ax = plt.subplots(figsize=(6.4, 5.4), layout="constrained")

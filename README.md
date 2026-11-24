@@ -11,7 +11,7 @@
 model and spectral extractor for high-contrast imaging, built for the
 Habitable Worlds Observatory (HWO) simulation suite.
 
-Given a multi-wavelength focal-plane datacube (for example from
+Given a band-integrated focal-plane datacube (for example from
 `coronagraphoto`) and a hardware descriptor (an `optixstuff.LensletDisperser`),
 coronachrome compiles the instrument geometry into a single sparse linear
 operator, renders the dispersed IFS detector image of per-lenslet
@@ -82,7 +82,7 @@ renderer = IFSRenderer(ir)
 cube = Image(
     jnp.ones((len(bands), 64, 64)),
     fp_grid,
-    ("wavelength",),
+    ("band",),
     measure=Measure.integral(),
     quantity="phot/s",
     reconstruction="nearest",
@@ -96,8 +96,8 @@ assert spectra.quantity == "phot/s"
 `(n-1)/2`; hex centres also remove the mean row stagger. Focal-plane centres
 come from the input grid; detector centres come from `hwoutils.radial.get_center`.
 
-Channels are `optixstuff.spectral.Band` intervals. Each channel's
-`Band.geometric_center_nm` is its reference wavelength, distinct from the
+Each cube plane integrates one `optixstuff.spectral.Band` interval. Its
+reference wavelength is `Band.geometric_center_nm`, distinct from the
 arithmetic `Band.center_nm`.
 Lenslet collection exactly integrates piecewise-constant focal pixels by
 cell/pixel overlap; smooth reconstructions, including band-limited images,

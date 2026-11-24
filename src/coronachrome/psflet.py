@@ -25,8 +25,8 @@ def gaussian_psflet(dx, dy, sigma_px):
     """2D Gaussian integrated over the unit pixel centered at (dx, dy) [px].
 
     Pixel-integrated (erf) form, matching CRISPY ``imgtools.gausspsf``. An overall
-    normalization constant is dropped because ``build_ir`` renormalizes each
-    footprint to unit flux.
+    normalization constant is dropped because ``build_ir`` normalizes the
+    full footprint before detector clipping.
     """
     return _gauss_axis_integral(dx, sigma_px) * _gauss_axis_integral(dy, sigma_px)
 
@@ -36,7 +36,7 @@ def moffat_psflet(dx, dy, alpha_px, beta, n_quad=5):
 
     No closed form, so the pixel is integrated by a midpoint-rule average over an
     ``n_quad x n_quad`` sub-grid. An overall normalization constant is irrelevant
-    because ``build_ir`` renormalizes each footprint to unit flux.
+    because ``build_ir`` normalizes the full footprint before detector clipping.
     """
     sub = jnp.linspace(-0.5 + 0.5 / n_quad, 0.5 - 0.5 / n_quad, n_quad)
     uu, vv = jnp.meshgrid(sub, sub, indexing="ij")

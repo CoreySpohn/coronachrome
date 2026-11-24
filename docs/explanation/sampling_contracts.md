@@ -1,9 +1,13 @@
 # Sampling contracts
 
 Inputs are `optixstuff.grids.Image` cubes with data `(band, y, x)`, leading axes
-`("wavelength",)`, an arcsec `PixelGrid`, a spatial `measure`, a `quantity`, and
+`("band",)`, an arcsec `PixelGrid`, a spatial `measure`, a `quantity`, and
 an explicit reconstruction. Pixel `(j, i)` is centred at `(x, y)=(i, j)`.
 Generated grids use geometric centres `(n-1)/2`.
+
+When migrating band-integrated cubes, relabel the leading axis from
+`("wavelength",)` to `("band",)`. Each plane contains the integral over the
+corresponding `Band` in `ir.bands`. Replace `ir.n_wav` with `ir.n_bands`.
 
 ## Spatial sampling
 

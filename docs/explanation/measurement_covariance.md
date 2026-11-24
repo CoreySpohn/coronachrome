@@ -102,8 +102,8 @@ from coronachrome import (
     unmodeled_covariance,
 )
 
-# planet_template: Image on ir.fp_grid, unit sum per wavelength plane.
-# speckle_modes:   (n_modes, n_wav, ny, nx) from a speckle generator.
+# planet_template: Image on ir.fp_grid, unit sum per band plane.
+# speckle_modes:   (n_modes, n_bands, ny, nx) from a speckle generator.
 # mode_variance:   (n_modes,) prior variance per mode, the generator PSD.
 science = amplitude_basis(planet_template, ir)
 from dataclasses import replace
@@ -138,7 +138,7 @@ nuisance rather than marginalizing it.
 The Fisher matrix is built matrix-free in the detector dimension. Each basis
 column is pushed through the weighted normal operator $H^\top W H$ with one
 forward and one adjoint sparse product, looped with `lax.map`, so the largest
-array formed is `(n_basis, n_channels * n_wav)` rather than one of
+array formed is `(n_basis, n_channels * n_bands)` rather than one of
 `(n_detector_pixels, n_basis)`. The remaining linear algebra is on matrices of
 the size of the basis, which is tens to hundreds of columns.
 

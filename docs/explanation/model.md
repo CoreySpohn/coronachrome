@@ -87,9 +87,9 @@ The descriptor is turned into the IR by three small models:
 The renderer ({class}`~coronachrome.IFSRenderer`) assembles the IR into a sparse
 matrix `H_mono`, stored in JAX's `BCOO` (batched coordinate) sparse format, and runs
 the forward model as one matvec, $y = H\,z$. Here $z$ has shape
-`(n_channels, n_wav)` and $y$ is the detector image. Public detector and extracted cube outputs are
-Images; extracted data are `(n_wav, y, x)` on the lenslet sky grid.
-`renderer.channel_spectra(cube)` exposes the `(n_channels, n_wav)` coefficients.
+`(n_channels, n_bands)` and $y$ is the detector image. Public detector and extracted cube outputs are
+Images; extracted data are `(n_bands, y, x)` on the lenslet sky grid.
+`renderer.channel_spectra(cube)` exposes the `(n_channels, n_bands)` coefficients.
 
 Two equivalent forward implementations are provided and tested against each other:
 
@@ -124,7 +124,7 @@ statistically complete:
 - **Covariance and error bars** ({func}`~coronachrome.spectrum_covariance`,
   {func}`~coronachrome.spectrum_errorbars`). The uncertainty on the least-squares
   spectrum is the Gauss-Markov covariance $(H^\top W H)^{-1}$. coronachrome returns it
-  per spaxel as an `n_wav` by `n_wav` block, whose diagonal is the per-wavelength
+  per spaxel as an `n_bands` by `n_bands` block, whose diagonal is the per-wavelength
   one-sigma error bar. These error bars scale with wavelength through the detector
   noise: where the source is bright the shot noise is larger, so the error bar is
   larger. The blocks are computed with `lax.map` over spaxels (one CG solve compiled
@@ -155,9 +155,10 @@ conditioning, so in practice it should be run under `x64`.
 The input cube contains band-integrated quantities, with a numerator unit in
 `Image.quantity`. Spatial sampling integrates cell flux or densities per
 square grid unit or steradian according to `Image.measure`. H integrates the disperser
-throughput at the quadrature nodes exactly once. Templates carry shape only. Surviving footprint pixels
-are normalized at each node, so numerical footprint and detector-edge losses
-are still renormalized; they are not a physical capture-efficiency model.
+throughput at the quadrature nodes exactly once. Templates carry shape only. At each node,
+the full modeled footprint sums to one before detector clipping. Pixels outside
+the detector carry away their share of the flux. The finite footprint size
+sets the region used for normalization.
 
 The forward operator does not apply detector QE. To handle wavelength-dependent
 yield correctly, assemble wavelength-resolved photon `Rates` at quadrature nodes,

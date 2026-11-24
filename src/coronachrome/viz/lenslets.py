@@ -237,7 +237,7 @@ def plot_lenslet_cells(
             With a disperser the width derives from sky_pitch_arcsec and fp_grid.
         angle_rad: Cell rotation for bare centers (ignored with a disperser).
         image: Optional entrance image, ``(ny, nx)`` or a cube
-            ``(n_wav, ny, nx)`` of bin-integrated rates.
+            ``(n_bands, ny, nx)`` of bin-integrated rates.
         plane: Wavelength index to draw from a cube; None sums the bins
             (the band-integrated rate).
         channels: Channel indices of lenslets to highlight.
@@ -569,8 +569,8 @@ def plot_traces(
         disperser_or_centroids: A ``LensletDisperser`` (centroids from
             :func:`coronachrome.build.detector_centroids`, the origin from
             :func:`coronachrome.build.detector_trace_origin`), or a bare
-            ``(xc, yc)`` pair of ``(n_channels, n_wav)`` detector centroids.
-        wavelengths_nm: ``(n_wav,)`` bin centers the IR was built on.
+            ``(xc, yc)`` pair of ``(n_channels, n_bands)`` detector centroids.
+        wavelengths_nm: ``(n_bands,)`` bin centers the IR was built on.
         channels: Channel indices of the traces to draw.
         psflet_pack: Template pack, as passed to ``build_ir``.
         layout: LensletLayout for bare descriptor calls; an IR supplies its own.
@@ -667,9 +667,9 @@ def plot_traces(
 
     ir = ir_or_image if isinstance(ir_or_image, SpatialChannelIR) else None
     if ir is not None:
-        if ir.n_wav != lam.shape[0]:
+        if ir.n_bands != lam.shape[0]:
             raise ValueError(
-                f"wavelengths_nm has {lam.shape[0]} bins, the IR {ir.n_wav}"
+                f"wavelengths_nm has {lam.shape[0]} bins, the IR {ir.n_bands}"
             )
         if footprints not in ("all", "channels"):
             raise ValueError('footprints must be "all" or "channels"')
