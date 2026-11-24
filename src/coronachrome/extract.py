@@ -116,9 +116,25 @@ def matched_filter(renderer, detector):
         renderer.adjoint(detector)
     )  # (n_channels, n_bands) = (H^T y) reshaped
     colnorm2 = (renderer.ir.det_vals**2).sum(axis=2)  # (n_channels, n_bands)
+    # Divide by the exact column norm however small it is (a deeply clipped edge
+    # column is real signal); only a column below the dtype's smallest normal
+    # number has no usable support and returns zero.
+    supported = _supported(colnorm2)
     return renderer.channel_cube(
-        num / jnp.clip(colnorm2, 1e-12, None), detector.quantity
+        num / jnp.where(supported, colnorm2, 1.0), detector.quantity
     )
+
+
+def _supported(squared_norm):
+    """Whether a squared column norm is representable in its own dtype.
+
+    Args:
+        squared_norm: Squared norms of operator columns.
+
+    Returns:
+        Boolean array, False for columns whose norm underflows the dtype.
+    """
+    return squared_norm > jnp.finfo(squared_norm.dtype).tiny
 
 
 def _equilibration(renderer, weights):
@@ -139,7 +155,10 @@ def _equilibration(renderer, weights):
         w = jnp.asarray(_weight_data(renderer, weights)).reshape(-1)
     # diag(H^T W H)_(ch,wav) = sum_k det_vals[ch,wav,k]^2 * w[det_rows[ch,wav,k]]
     wdiag = (ir.det_vals**2 * w[ir.det_rows]).sum(axis=2).reshape(-1)  # (ncw,)
-    d = 1.0 / jnp.sqrt(jnp.clip(wdiag, 1e-30, None))
+    # Equilibrate by the exact column scale, however small; a column whose scale
+    # underflows has no support: d = 0 removes it from the solve.
+    supported = _supported(wdiag)
+    d = jnp.where(supported, 1.0 / jnp.sqrt(jnp.where(supported, wdiag, 1.0)), 0.0)
     return w, d
 
 
@@ -154,6 +173,8 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     pass ``1 / N`` (N the per-pixel noise variance) for noise-weighted
     extraction. Returns a cell-integrated lenslet Image of shape (n_bands, y, x).
     Differentiable through the solve with numerically stable gradients.
+    A column whose squared norm underflows the dtype has no support: its
+    coefficient is zero (``matched_filter`` likewise returns zero for it).
 
     Precision and conditioning: the forward model and this solve run in the
     stack's native precision (float32 by default). A well-sampled extraction
@@ -198,10 +219,16 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
         )
         rhs = jnp.concatenate([sw * y, jnp.zeros(ncw, dtype=y.dtype)])
     else:
+        # A removed column (d = 0) gets an identity row so the system stays
+        # nonsingular and its coefficient solves to zero.
+        removed = d == 0
         operator = lx.FunctionLinearOperator(
-            lambda zp: sw * (h_mono @ (d * zp)), z_struct
+            lambda zp: jnp.concatenate(
+                [sw * (h_mono @ (d * zp)), jnp.where(removed, zp, 0.0)]
+            ),
+            z_struct,
         )
-        rhs = sw * y
+        rhs = jnp.concatenate([sw * y, jnp.zeros(ncw, dtype=y.dtype)])
     solver = lx.Normal(lx.CG(rtol=rtol, atol=atol))
     sol = lx.linear_solve(operator, rhs, solver=solver)
     return renderer.channel_cube(
@@ -217,7 +244,9 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     spectrum (the same estimator as :func:`lstsq`), with ``W = diag(weights)``.
     This is the Gauss-Markov / Cramer-Rao covariance; it captures intra-spectrum
     wavelength correlations from trace cross-talk, and its diagonal gives the
-    per-wavelength error bars (see :func:`spectrum_errorbars`).
+    per-wavelength error bars (see :func:`spectrum_errorbars`). A column with no
+    support (squared norm underflowing the dtype) has infinite variance and zero
+    covariance with the others.
 
     Matrix-free: for each channel it runs ``n_bands`` symmetric-positive-definite
     CG solves against the same weight-equilibrated normal operator as
@@ -255,9 +284,12 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     dtype = h_mono.data.dtype
     w, d = _equilibration(renderer, weights)
 
+    removed = d == 0
+
     def normal_mv(v):
-        # D H^T W H D v -- the equilibrated SPD normal operator.
-        return d * (h_mono.T @ (w * (h_mono @ (d * v))))
+        # D H^T W H D v -- the equilibrated SPD normal operator; removed columns
+        # (d = 0) carry an identity row so the operator stays nonsingular.
+        return d * (h_mono.T @ (w * (h_mono @ (d * v)))) + jnp.where(removed, v, 0.0)
 
     operator = lx.FunctionLinearOperator(
         normal_mv,
@@ -277,7 +309,10 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
         block_p = xp[:, cols].T
         dch = d[cols]
         # undo equilibration: Cov_z = D (.)^-1 D
-        return dch[:, None] * block_p * dch[None, :]
+        block = dch[:, None] * block_p * dch[None, :]
+        # A removed column has no data support: infinite variance, no covariance.
+        diag = jnp.where(removed[cols], jnp.inf, jnp.diagonal(block))
+        return block.at[jnp.arange(n_bands), jnp.arange(n_bands)].set(diag)
 
     # lax.map (not vmap) over channels and unit columns: each block is an
     # iterative CG solve, and vmapping a solver batches its whole while-loop into

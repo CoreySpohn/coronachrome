@@ -14,7 +14,7 @@ from optixstuff.grids import Measure
 from optixstuff.rates import Rates
 from optixstuff.spectral import Band, Quadrature
 
-from coronachrome.build import build_ir
+from coronachrome.build import build_ir, detector_centroids
 from coronachrome.extract import (
     detector_statistics,
     lstsq,
@@ -405,3 +405,69 @@ def test_detector_statistics_sums_variance_components(detector_setup):
     mean, variance = detector_statistics(renderer, detector, rates, plan)
     np.testing.assert_array_equal(mean.data, expected_mean[0], strict=True)
     np.testing.assert_array_equal(variance.data, expected_variance[0], strict=True)
+
+
+def _edge_renderer(xc, half, sigma=0.7):
+    """One lenslet at 700 nm whose Gaussian PSFlet is centered at detector x = xc."""
+
+    def disperser(coeff):
+        return LensletDisperser(
+            pitch_m=174e-6,
+            sky_pitch_arcsec=0.2,
+            pixsize_m=13e-6,
+            angle_rad=0.0,
+            lam_ref_nm=660.0,
+            pix_per_reselt=2.0,
+            dispersion_coeffs=jnp.array([coeff, 0.0]),
+            psflet_params=jnp.array([sigma]),
+            psflet_ref_nm=660.0,
+            grid_kind="square",
+            n_lenslets=1,
+            psflet_kind="gaussian",
+            detector_shape=(32, 32),
+        )
+
+    # The trace is linear in the first coefficient: measure its slope, then solve.
+    lam = jnp.array([700.0])
+    base = float(detector_centroids(disperser(0.0), lam)[0][0, 0])
+    slope = float(detector_centroids(disperser(1.0), lam)[0][0, 0]) - base
+    disp = disperser((xc - base) / slope)
+    assert float(detector_centroids(disp, lam)[0][0, 0]) == pytest.approx(xc)
+    ir = build_ir(disp, fp_grid=sky_grid((2, 2), 0.1), bands=bands_at(lam), half=half)
+    return IFSRenderer(ir)
+
+
+def test_matched_filter_recovers_flux_of_a_deeply_clipped_edge_column():
+    """A column with only its far tail on the detector still returns the flux."""
+    r = _edge_renderer(-4.0, half=6)
+    column = float((r.ir.det_vals**2).sum())
+    assert 0 < column < 1e-12  # below the former absolute floor
+    detector = (r.H_mono @ jnp.array([10.0])).reshape(r.ir.det_shape)
+    cube = matched_filter(r, r.detector_image(detector, "e"))
+    np.testing.assert_allclose(r.channel_spectra(cube), 10.0, rtol=1e-9)
+
+
+def test_lstsq_and_covariance_are_finite_for_a_faint_surviving_weight():
+    """A column whose surviving weight is 1e-23 is solved exactly, not floored."""
+    r = _edge_renderer(-1.0, half=1)
+    faint = r.ir.det_vals * (1e-23 / r.ir.det_vals.max())
+    r = IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, r.ir, faint))
+    detector = (r.H_mono @ jnp.array([10.0])).reshape(r.ir.det_shape)
+    z_hat = r.channel_spectra(lstsq(r, r.detector_image(detector, "e")))
+    np.testing.assert_allclose(z_hat, 10.0, rtol=1e-6)
+    variance = spectrum_covariance(r, channels=[0])
+    expected = 1.0 / float((faint**2).sum())
+    assert np.all(np.isfinite(variance))
+    np.testing.assert_allclose(variance[0, 0, 0], expected, rtol=1e-6)
+
+
+def test_a_column_with_no_support_is_removed_not_nan():
+    """An underflowing column returns zero flux, infinite variance, and no NaN."""
+    r = _edge_renderer(-1.0, half=1)
+    dead = jnp.zeros_like(r.ir.det_vals)
+    r = IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, r.ir, dead))
+    detector = r.detector_image(jnp.ones(r.ir.det_shape), "e")
+    assert float(matched_filter(r, detector).data.sum()) == 0.0
+    assert float(lstsq(r, detector).data.sum()) == 0.0
+    cov = spectrum_covariance(r, channels=[0])
+    assert np.isinf(cov[0, 0, 0]) and not np.any(np.isnan(cov))
