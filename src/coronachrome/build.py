@@ -22,6 +22,7 @@ from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.psflet import psflet_weights
 from coronachrome.templates import (
+    check_template_origin,
     nearest_field_idx,
     template_weights,
 )
@@ -29,15 +30,40 @@ from coronachrome.templates import (
 
 @functools.singledispatch
 def build_ir(disperser, bands, fp_grid, **kwargs):
-    """Build a SpatialChannelIR from a disperser descriptor."""
+    """Build a SpatialChannelIR from a disperser descriptor.
+
+    Args:
+        disperser: Descriptor defining the instrument geometry.
+        bands: Ordered spectral bands of the input cube.
+        fp_grid: Focal-plane pixel grid.
+        **kwargs: Options for the registered disperser builder.
+
+    Returns:
+        The compiled operator for the supplied geometry and bands.
+
+    Raises:
+        NotImplementedError: The descriptor has no registered builder.
+    """
     raise NotImplementedError(
         f"build_ir not implemented for {type(disperser).__name__}"
     )
 
 
 def _resolve_psflet_pack(disperser, psflet_pack):
-    """Resolve the template pack: the explicit argument, else the descriptor path."""
+    """Resolve a centroid-relative PSFlet pack for footprint placement.
+
+    Args:
+        disperser: Descriptor carrying the optional pack path.
+        psflet_pack: Explicit in-memory pack, taking precedence over the path.
+
+    Returns:
+        The validated in-memory pack or the pack loaded from the descriptor.
+
+    Raises:
+        ValueError: The origin convention is unsupported or no pack is supplied.
+    """
     if psflet_pack is not None:
+        check_template_origin(psflet_pack)
         return psflet_pack
     if disperser.psflet_pack_path is not None:
         return load_psflet_pack(disperser.psflet_pack_path)
@@ -147,7 +173,7 @@ def _placement_centroids(disperser, positions, lam, pack):
                 axis=-1,
             )
 
-        corr = jax.vmap(interp_corr)(pack.centroids)  # (n_field, n_wav, 2)
+        corr = jax.vmap(interp_corr)(pack.centroids)  # (n_field, n_samples, 2)
         xc = xc + corr[field_idx, :, 0]
         yc = yc + corr[field_idx, :, 1]
     return xc, yc, field_idx
@@ -173,7 +199,7 @@ def detector_centroids(
 
     Args:
         disperser: A ``LensletDisperser``.
-        wavelengths_nm: ``(n_wav,)`` wavelengths.
+        wavelengths_nm: ``(n_samples,)`` wavelengths.
         psflet_pack: Template pack for ``psflet_kind="template"`` (default:
             the descriptor's ``psflet_pack_path``, as in :func:`build_ir`).
         positions: Optional ``(n, 2)`` lenslet-index coordinates (default:
@@ -183,7 +209,7 @@ def detector_centroids(
             False returns the geometric dispersion trace alone.
 
     Returns:
-        Tuple ``(xc, yc)``, each ``(n, n_wav)``.
+        Tuple ``(xc, yc)``, each ``(n, n_samples)``.
     """
     lam = jnp.atleast_1d(jnp.asarray(wavelengths_nm, dtype=float))
     if positions is None:
@@ -238,6 +264,22 @@ def _(
     uses a host-built sparse matrix of exact pixel/cell overlap areas.
     This integrates piecewise-constant density; smooth reconstructions are
     approximated by that density (see spatial_sample).
+
+    Args:
+        disperser: Lenslet geometry, dispersion, PSFlet and throughput model.
+        bands: Ordered spectral intervals for the input flux integrals.
+        fp_grid: Focal-plane pixel grid in arcseconds.
+        layout: Optional lenslet layout matching the disperser.
+        half: Half-width of the modeled detector footprint in pixels.
+        psflet_pack: Optional centroid-relative template pack.
+        quadrature_order: Number of nodes per spectral integration interval.
+
+    Returns:
+        The spatial collection and detector dispersion operator.
+
+    Raises:
+        ValueError: The geometry or template pack is incompatible with the
+            requested grid, wavelength bands or footprint.
     """
     if fp_grid.unit != "arcsec":
         raise ValueError("fp_grid must use arcsec; convert lod through its Frame")
@@ -314,15 +356,19 @@ def _(
         dxq.reshape(nc, nw * nq, npix), dyq.reshape(nc, nw * nq, npix), nodes
     ).reshape(nc, nw, nq, npix)
     valid = (px >= 0) & (px < nx) & (py >= 0) & (py < ny)
-    g = jnp.where(valid[:, :, None, :], g, 0.0)
+    # Normalize the modeled footprint before discarding off-detector light.
     total = g.sum(axis=-1, keepdims=True)
     g = g / jnp.clip(total, 1e-12, None)
+    g = jnp.where(valid[:, :, None, :], g, 0.0)
     throughput = disperser.throughput(nodes).reshape(quadrature.nodes_nm.shape)
     # Mean response per detector pixel for constant spectral density in a band.
     response = g.transpose(1, 2, 0, 3) * throughput[:, :, None, None]
     det_vals = quadrature.mean(response).transpose(1, 0, 2)
     det_rows = jnp.clip((py * nx + px).astype(jnp.int32), 0, ny * nx - 1)
-    if bool(jnp.any((total[..., 0] <= 1e-12) & quadrature.active[None])):
+    # A dark template can have zero weight before detector clipping.
+    outside = ~valid.any(axis=-1, keepdims=True)
+    lost = (g.sum(axis=-1) == 0) & ((total[..., 0] > 0) | outside)
+    if bool(jnp.any(lost & quadrature.active[None])):
         warnings.warn(
             "(channel, wavelength) footprints fell off the detector", stacklevel=2
         )

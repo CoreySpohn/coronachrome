@@ -1,7 +1,10 @@
 """Build-time Band, grid and layout contracts."""
 
+from contextlib import nullcontext
+
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid
 from optixstuff import TransmissiveElement
@@ -287,3 +290,30 @@ def test_build_ir_spatial_footprint_is_flux_conserving():
     converted = lod.to_arcsec(660)
     assert converted.frame == lod.frame
     assert eqx.is_array(z)
+
+
+@pytest.mark.parametrize(("offset", "fraction"), [(-16, 0.5), (0, 1.0), (-24, 0.0)])
+def test_gaussian_detector_edge(offset, fraction):
+    """Symmetry gives half the flux at x=-0.5, within 1 ppm for finite wings."""
+    disp = _disp(1, detector_shape=(32, 32), dispersion_coeffs=jnp.array([offset]))
+    warning = pytest.warns(UserWarning, match="fell off the detector")
+    with warning if fraction == 0 else nullcontext():
+        ir = build_ir(disp, bands_at([660]), sky_grid((4, 4)), half=6)
+    np.testing.assert_allclose(ir.det_vals.sum(axis=-1), fraction, rtol=1e-6, atol=0)
+
+
+def test_uniform_array_clipped_flux():
+    """Two of four lenslets straddle the edge, leaving three lenslets of flux."""
+    disp = _disp(
+        2,
+        pitch_m=8 * 13e-6,
+        detector_shape=(32, 32),
+        dispersion_coeffs=jnp.array([-12.0]),
+    )
+    ir = build_ir(disp, bands_at([660]), sky_grid((8, 8)), half=6)
+    image = focal_image(jnp.ones((1, 8, 8)), ir.fp_grid)
+    counts = IFSRenderer(ir).forward_spmv(image).data.sum()
+    flux_per_lenslet = 4.0  # Each square cell covers four unit-flux focal pixels.
+    expected = (ir.det_vals.sum(axis=-1) * flux_per_lenslet).sum()
+    np.testing.assert_allclose(counts, expected, rtol=1e-12, atol=0)
+    np.testing.assert_allclose(counts, 3 * flux_per_lenslet, rtol=1e-12, atol=0)

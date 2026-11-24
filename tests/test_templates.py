@@ -323,3 +323,23 @@ def test_one_wavelength_pack_builds_with_and_without_centroids():
     x2 = (ir_shift.det_rows % nx) * ir_shift.det_vals
     mean_shift = (x2.sum(axis=2) - x0.sum(axis=2)) / ir_single.det_vals.sum(axis=2)
     assert jnp.allclose(mean_shift, 2.0, atol=0.05)
+
+
+def test_zero_template_on_detector_is_not_clipping():
+    """A dark template fully on the detector causes no clipping warning."""
+    pack = PsfletPack(
+        templates=jnp.zeros((1, 2, 3, 3)),
+        offsets=jnp.arange(-1, 2),
+        wavelengths_nm=[650, 670],
+        field_xy=jnp.zeros((1, 2)),
+        template_origin=TEMPLATE_ORIGIN,
+    )
+    ir = build_ir(
+        _disp(1, psflet_kind="template"),
+        (Band(650, 670),),
+        sky_grid((4, 4)),
+        half=1,
+        psflet_pack=pack,
+        quadrature_order=1,
+    )
+    assert not np.any(ir.det_vals)

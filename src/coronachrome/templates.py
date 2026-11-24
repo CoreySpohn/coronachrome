@@ -2,9 +2,9 @@
 
 A pack (:class:`optixstuff.psflet_pack.PsfletPack`) tabulates the
 pixel-integrated PSFlet response on a fine sub-pixel offset grid. The absolute
-(and per-wavelength) normalization is irrelevant: the IR build renormalizes
-each footprint to unit flux and the disperser throughput curve owns chromatic
-transmission, so templates carry shape only.
+(and per-wavelength) normalization is irrelevant: the IR build normalizes
+the full modeled footprint before detector clipping. The disperser throughput
+curve sets chromatic transmission, so templates carry shape only.
 
 Packs are the array waist between a PSFlet generator and this library: an
 external wave-optics code (or the analytic reference emitter here) writes the
@@ -154,6 +154,23 @@ def _bilinear(templates, field_idx, dx, dy, offsets):
     )
 
 
+def check_template_origin(pack):
+    """Refuse a pack whose templates are not centered on their own centroid.
+
+    Args:
+        pack: A :class:`PsfletPack`, possibly built or altered in memory.
+
+    Raises:
+        ValueError: The declared template origin is missing or not ``"centroid"``.
+    """
+    origin = getattr(pack, "template_origin", None)
+    if origin != TEMPLATE_ORIGIN:
+        raise ValueError(
+            f"unsupported PSFlet template origin {origin!r}. "
+            "For legacy origin-relative templates, regenerate the pack"
+        )
+
+
 def template_weights(pack, dx, dy, wavelength_nm, field_idx, smear_px, n_sub=5):
     """Template-mode PSFlet footprint weights with LSF smear along x.
 
@@ -174,6 +191,7 @@ def template_weights(pack, dx, dy, wavelength_nm, field_idx, smear_px, n_sub=5):
     Returns:
         Weights with the same shape as ``dx``.
     """
+    check_template_origin(pack)
     templates = _blend_planes(pack, wavelength_nm)
     shifts = jnp.linspace(-0.5 * smear_px, 0.5 * smear_px, n_sub)
 
