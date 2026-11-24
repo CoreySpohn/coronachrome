@@ -40,7 +40,9 @@ blur grows with wavelength. Template mode therefore applies **no width
 scaling** and ignores `psflet_params` and `psflet_ref_nm` entirely. Chromatic
 morphology comes from tabulating templates at multiple wavelengths; the build
 interpolates linearly between the bracketing planes and refuses to
-extrapolate outside the tabulated range.
+extrapolate outside the tabulated range. A pack tabulated at one wavelength is
+monochromatic: it is accepted only for a band at that wavelength (both band
+edges within the wavelength tolerance of it) and refused for any wider band.
 
 ## Pack format (npz, `format_version = 1`)
 

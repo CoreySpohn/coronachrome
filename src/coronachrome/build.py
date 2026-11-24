@@ -11,10 +11,11 @@ import warnings
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import PixelGrid, footprint_overlap
 from optixstuff.psflet_pack import load_psflet_pack
-from optixstuff.spectral import Quadrature
+from optixstuff.spectral import Quadrature, same_wavelength
 
 from coronachrome.dispersion import lenslet_centroids
 from coronachrome.grids import LensletLayout
@@ -51,9 +52,19 @@ def _validate_pack_for_band(pack, lam, half):
     pack_nm = pack.wavelengths_nm.values
     lam_lo = float(pack_nm[0])
     lam_hi = float(pack_nm[-1])
-    # A one-wavelength pack is constant in wavelength: nothing is extrapolated.
-    one = pack_nm.size == 1
-    if not one and (float(lam.min()) < lam_lo or float(lam.max()) > lam_hi):
+    if pack_nm.size == 1:
+        # A one-wavelength pack is a monochromatic template set: valid only for
+        # a band whose edges are at its own wavelength.
+        edges = np.asarray(lam, dtype=np.float64)
+        if not np.all(same_wavelength(edges, lam_lo)):
+            raise ValueError(
+                f"the pack is tabulated at one wavelength, {lam_lo:.6g} nm, so "
+                "it is monochromatic; the requested band "
+                f"[{float(edges.min()):.6g}, {float(edges.max()):.6g}] nm is "
+                "not at that wavelength. Use a pack with several wavelengths "
+                "for a wider band"
+            )
+    elif float(lam.min()) < lam_lo or float(lam.max()) > lam_hi:
         raise ValueError(
             f"requested band [{float(lam.min()):.6g}, {float(lam.max()):.6g}] nm "
             f"extends beyond the pack's tabulated range [{lam_lo:.6g}, "

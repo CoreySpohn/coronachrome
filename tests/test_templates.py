@@ -7,7 +7,7 @@ from conftest import bands_at, sky_grid
 from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
 from optixstuff.psflet_pack import PsfletPack, save_psflet_pack
-from optixstuff.spectral import Band
+from optixstuff.spectral import Band, merge_tolerance_nm
 
 from coronachrome.build import build_ir
 from coronachrome.templates import (
@@ -200,6 +200,29 @@ def test_centroid_corrections_shift_footprints():
     assert jnp.allclose(mean_shift, 2.0, atol=0.05)
 
 
+def test_one_wavelength_pack_is_monochromatic():
+    """A one-wavelength pack is valid only for a band at its own wavelength.
+
+    Truth: the merge tolerance at 660 nm is four float32 ULPs, 2.4e-4 nm. A
+    band 1.5 tolerances wide is at the pack wavelength (both edges within the
+    tolerance of it) and builds; a band of 0.1 nm, hundreds of tolerances
+    wide, or one centred 1 nm away, is refused, naming the pack wavelength.
+    """
+    single = _gaussian_pack(jnp.array([660.0]))
+    disp = _disp(4, psflet_kind="template")
+    grid = sky_grid((32, 32), 0.2 / (2.0))
+    tol = float(merge_tolerance_nm(660.0))
+    build_ir(disp, psflet_pack=single, fp_grid=grid, bands=bands_at([660.0], 1.5 * tol))
+    for center, width in ((660.0, 0.1), (661.0, 1.5 * tol)):
+        with pytest.raises(ValueError, match="one wavelength, 660 nm"):
+            build_ir(
+                disp,
+                psflet_pack=single,
+                fp_grid=grid,
+                bands=bands_at([center], width),
+            )
+
+
 def test_nearest_field_anchor_selects_template():
     """Each lenslet uses its nearest field anchor's template.
 
@@ -275,7 +298,10 @@ def test_one_wavelength_pack_builds_with_and_without_centroids():
     )
     disp = _disp(4, psflet_kind="template")
     kwargs = dict(
-        fp_grid=sky_grid((32, 32), 0.2 / (2.0)), bands=bands_at(jnp.array([660.0]))
+        fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
+        bands=bands_at(
+            jnp.array([660.0]), width_nm=1.5 * float(merge_tolerance_nm(660.0))
+        ),
     )
     ir_single = build_ir(disp, psflet_pack=single, **kwargs)
     ir_double = build_ir(disp, psflet_pack=double, **kwargs)
