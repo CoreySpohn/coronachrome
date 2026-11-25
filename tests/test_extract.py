@@ -202,6 +202,7 @@ def test_lstsq_recovers_sharp_dip_spaxel():
     assert float(z_hat[ch][11]) < 0.2
 
 
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_spectrum_covariance_matches_dense_block():
     """Per-channel covariance equals the dense (H^T W H)^-1 channel block."""
     r, n_bands = _renderer()
@@ -220,6 +221,7 @@ def test_spectrum_covariance_matches_dense_block():
         assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
 
 
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_spectrum_covariance_many_channels_matches_dense():
     """The lax.map path matches dense (H^T W H)^-1 blocks across many channels."""
     r, n_bands = _renderer()
@@ -233,6 +235,7 @@ def test_spectrum_covariance_many_channels_matches_dense():
         assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
 
 
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_spectrum_errorbars_is_sqrt_diag():
     """Error bars equal sqrt of the covariance block diagonal."""
     r, _n_bands = _renderer()
@@ -242,6 +245,7 @@ def test_spectrum_errorbars_is_sqrt_diag():
     assert jnp.allclose(err, jnp.sqrt(jnp.diagonal(cov, axis1=-2, axis2=-1)))
 
 
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_errorbars_scale_as_sqrt_noise():
     """Doubling the per-pixel noise variance scales error bars by sqrt(2)."""
     r, _n_bands = _renderer()
@@ -254,6 +258,7 @@ def test_errorbars_scale_as_sqrt_noise():
     assert jnp.allclose(err_n2 / err_n1, jnp.sqrt(2.0), rtol=1e-3)
 
 
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_covariance_montecarlo_coverage():
     """Predicted covariance matches the empirical covariance of the GLS estimator."""
     r, n_bands = _renderer()
@@ -282,6 +287,7 @@ def test_covariance_montecarlo_coverage():
 
 @vv.case("ifs-noise-seam", "code-verification")
 @vv.seam("optixstuff", "coronachrome")
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_detector_variance_one_lenslet_one_band():
     """Fails if detector noise is duplicated or count variance becomes a rate.
 
@@ -447,6 +453,7 @@ def test_matched_filter_recovers_flux_of_a_deeply_clipped_edge_column():
     np.testing.assert_allclose(r.channel_spectra(cube), 10.0, rtol=1e-9)
 
 
+@pytest.mark.float64_only(reason="the squared 1e-23 weight underflows in float32")
 def test_lstsq_and_covariance_are_finite_for_a_faint_surviving_weight():
     """A column whose surviving weight is 1e-23 is solved exactly, not floored."""
     r = _edge_renderer(-1.0, half=1)
@@ -462,12 +469,20 @@ def test_lstsq_and_covariance_are_finite_for_a_faint_surviving_weight():
 
 
 def test_a_column_with_no_support_is_removed_not_nan():
-    """An underflowing column returns zero flux, infinite variance, and no NaN."""
+    """Fails if a column with no support returns nonzero or nonfinite flux."""
     r = _edge_renderer(-1.0, half=1)
     dead = jnp.zeros_like(r.ir.det_vals)
     r = IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, r.ir, dead))
     detector = r.detector_image(jnp.ones(r.ir.det_shape), "e")
     assert float(matched_filter(r, detector).data.sum()) == 0.0
     assert float(lstsq(r, detector).data.sum()) == 0.0
+
+
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
+def test_covariance_of_column_with_no_support_is_infinite():
+    """Fails if a column with no support has finite or NaN variance."""
+    r = _edge_renderer(-1.0, half=1)
+    dead = jnp.zeros_like(r.ir.det_vals)
+    r = IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, r.ir, dead))
     cov = spectrum_covariance(r, channels=[0])
     assert np.isinf(cov[0, 0, 0]) and not np.any(np.isnan(cov))

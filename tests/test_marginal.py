@@ -3,6 +3,7 @@
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from conftest import bands_at, focal_image, sky_grid
 from optixstuff.disperser import LensletDisperser
 
@@ -99,6 +100,7 @@ def test_amplitude_basis_contracts_to_a_scaled_template():
     assert jnp.allclose(contracted, direct, rtol=1e-10, atol=1e-12)
 
 
+@pytest.mark.float64_only(reason="nuisance covariance requires float64")
 def test_marginal_without_nuisance_is_the_conditional_fisher_inverse():
     """No nuisance block means the plain (C^T W C)^-1 of the science block."""
     r, n_bands = _renderer()
@@ -110,6 +112,7 @@ def test_marginal_without_nuisance_is_the_conditional_fisher_inverse():
     assert np.allclose(np.asarray(cov), ref, rtol=1e-6, atol=1e-12)
 
 
+@pytest.mark.float64_only(reason="nuisance covariance requires float64")
 def test_marginal_equals_the_joint_inverse_science_block():
     """The Schur complement matches the science block of the full joint inverse."""
     r, n_bands = _renderer()
@@ -131,6 +134,7 @@ def test_marginal_equals_the_joint_inverse_science_block():
     )
 
 
+@pytest.mark.float64_only(reason="nuisance covariance requires float64")
 def test_marginalizing_costs_information_but_less_than_ignoring():
     """Conditional <= marginal <= unmodeled, per wavelength."""
     r, n_bands = _renderer()
@@ -151,6 +155,7 @@ def test_marginalizing_costs_information_but_less_than_ignoring():
     assert float(jnp.max(unmodeled / conditional)) > 1.05
 
 
+@pytest.mark.float64_only(reason="nuisance covariance requires float64")
 def test_weights_scale_the_covariance_inversely():
     """Doubling the inverse-variance weights halves the covariance."""
     r, n_bands = _renderer()
@@ -167,6 +172,7 @@ def test_weights_scale_the_covariance_inversely():
     assert jnp.allclose(cov2, 0.5 * cov1, rtol=1e-6)
 
 
+@pytest.mark.float64_only(reason="nuisance covariance requires float64")
 def test_degenerate_nuisance_destroys_the_science_information():
     """A nuisance equal to the science block leaves nothing identifiable."""
     r, n_bands = _renderer()
@@ -180,6 +186,7 @@ def test_degenerate_nuisance_destroys_the_science_information():
     assert float(jnp.min(degenerate / conditional)) > 1e6
 
 
+@pytest.mark.float64_only(reason="nuisance covariance requires float64")
 def test_marginal_covariance_matches_monte_carlo():
     """The closed form reproduces the joint estimator's sampling covariance."""
     r, n_bands = _renderer()
