@@ -52,6 +52,7 @@ def test_rejects_wrong_n_channels():
 
 
 @pytest.mark.parametrize("form", ["sparse", "axes"])
+@pytest.mark.float32_only(reason="checks the default float32 overlap-weight dtype")
 def test_overlap_weights_are_strong_leaves_under_x32(form):
     """Fails if the IR holds NumPy or weakly typed collection overlap weights.
 
@@ -59,24 +60,21 @@ def test_overlap_weights_are_strong_leaves_under_x32(form):
     weights are float32 and integer indices stay int32. Truth source: the leaf
     rule; dtypes are exact, so there is no tolerance.
     """
-    with jax.enable_x64(False):
-        if form == "axes":
-            target = PixelGrid.regular((2, 2), 0.35, "arcsec")
-            overlap = footprint_overlap(sky_grid((16, 16)), target)
-            assert overlap.axes is not None
-        else:
-            cells = (
-                PixelGrid.regular((1, 2), 0.35, "arcsec"),
-                PixelGrid.regular((1, 2), 0.35, "arcsec", center=(0.5, 0.0)),
-            )
-            overlap = footprint_overlap(sky_grid((16, 16)), cells)
-            assert overlap.sparse is not None
-        held = _ir(overlap).collection_overlap
-        group = held.axes if form == "axes" else held.sparse
-        dtypes = (
-            [jnp.float32] * 2 if form == "axes" else [jnp.int32] * 2 + [jnp.float32]
+    if form == "axes":
+        target = PixelGrid.regular((2, 2), 0.35, "arcsec")
+        overlap = footprint_overlap(sky_grid((16, 16)), target)
+        assert overlap.axes is not None
+    else:
+        cells = (
+            PixelGrid.regular((1, 2), 0.35, "arcsec"),
+            PixelGrid.regular((1, 2), 0.35, "arcsec", center=(0.5, 0.0)),
         )
-        for leaf, dtype in zip(group, dtypes, strict=True):
-            assert isinstance(leaf, jax.Array)
-            assert leaf.dtype == dtype
-            assert not leaf.weak_type
+        overlap = footprint_overlap(sky_grid((16, 16)), cells)
+        assert overlap.sparse is not None
+    held = _ir(overlap).collection_overlap
+    group = held.axes if form == "axes" else held.sparse
+    dtypes = [jnp.float32] * 2 if form == "axes" else [jnp.int32] * 2 + [jnp.float32]
+    for leaf, dtype in zip(group, dtypes, strict=True):
+        assert isinstance(leaf, jax.Array)
+        assert leaf.dtype == dtype
+        assert not leaf.weak_type

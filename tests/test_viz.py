@@ -784,6 +784,7 @@ def test_covariance_orientation_is_row_up_column_right():
         assert b * 3 - 0.5 < y < (b + 1) * 3 - 0.5
 
 
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_spectrum_covariance_output_plots_directly(setup):
     """spectrum_covariance output plots with unit diagonal correlation."""
     from coronachrome import spectrum_covariance

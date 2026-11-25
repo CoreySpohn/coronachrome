@@ -1,9 +1,8 @@
-"""Shared pytest fixtures and JAX configuration for coronachrome tests."""
+"""Shared pytest fixtures and Hypothesis configuration for coronachrome tests."""
 
 import importlib.util
 import os
 
-import jax
 from hypothesis import settings
 from optixstuff.grids import Measure
 
@@ -17,8 +16,6 @@ if importlib.util.find_spec("hwoutils.internal_refs") is not None:
 settings.register_profile("quick", max_examples=25, deadline=None)
 settings.register_profile("nightly", max_examples=200, deadline=None)
 settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "quick"))
-
-jax.config.update("jax_enable_x64", True)
 
 
 def bands_at(wavelengths_nm, width_nm=1e-3):
