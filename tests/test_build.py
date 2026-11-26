@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid
 from hwoutils.leaves import canonical
-from hwoutils.numerics import sum_roundoff
+from hwoutils.numerics import roundoff, sum_roundoff
 from hwoutils.testing import assert_precision_closed, precision_pair, ulps
 from optixstuff import TransmissiveElement
 from optixstuff.disperser import LensletDisperser
@@ -298,12 +298,12 @@ def test_build_ir_returns_ir_with_expected_shapes():
     assert ir.detector_grid.unit == "meter"
 
 
-def _footprint_sum_roundoff(ir, expected):
-    """Budget two stamp sums, two five-node sums, and five scalar roundings."""
+def _footprint_sum_roundoff(ir, expected, *, n_nodes=5):
+    """Budget two stamp sums, two quadrature sums, and five scalar roundings."""
     unit = jnp.asarray(expected, dtype=ir.det_vals.dtype)
     return float(
         2 * sum_roundoff(unit, ir.det_vals.shape[-1])
-        + 2 * sum_roundoff(unit, 5)
+        + 2 * sum_roundoff(unit, n_nodes)
         + ulps(5, unit)
     )
 
@@ -479,8 +479,14 @@ def test_resampling_footprint_masks_off_grid():
 def test_throughput_scales_footprint_sums():
     """Fails if throughput is sampled only at reference.
 
-    Knot-split triangle integral at the floating-point floor.
+    The knot-split linear response has mean 0.5. At that scale and the IR
+    dtype, use pairwise depth for two 625-pixel sums (normalization and the
+    final reduction) and two ten-node sums (weighted response and band width).
+    Allow five scalar roundings for two divisions, two products, and weight
+    storage, plus five for storing the tabulated transmission values and
+    interpolating (response difference, fraction division, product, addition).
     """
+    quadrature_order = 5
     curve = TransmissiveElement(
         Transmission(jnp.array([600.0, 650.0, 700.0]), jnp.array([0.2, 0.8, 0.2]))
     )
@@ -489,8 +495,19 @@ def test_throughput_scales_footprint_sums():
         (Band(600, 700),),
         sky_grid((16, 16)),
         half=12,
+        quadrature_order=quadrature_order,
     )
-    assert jnp.allclose(ir.det_vals.sum(), 0.5, atol=3e-15, rtol=0)
+    expected = 0.5
+    # The 650 nm knot splits the band into two five-node intervals.
+    atol = _footprint_sum_roundoff(ir, expected, n_nodes=2 * quadrature_order) + float(
+        roundoff(expected, n_ops=5, dtype=ir.det_vals.dtype)
+    )
+    assert jnp.allclose(
+        ir.det_vals.sum(),
+        expected,
+        atol=atol,  # tol: algorithm, lane roundoff for stamp and quadrature sums
+        rtol=0,
+    )
 
 
 def test_build_ir_spatial_footprint_is_flux_conserving():
