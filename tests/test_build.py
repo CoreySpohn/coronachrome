@@ -1,6 +1,5 @@
 """Build-time Band, grid and layout contracts."""
 
-import re
 from contextlib import nullcontext
 
 import equinox as eqx
@@ -191,24 +190,13 @@ def test_ir_build_accepts_legacy_layout_override():
     assert int(ir.det_rows[0, 0, 4]) == 4 * 9 + 5
 
 
-class _OptixstuffDispersionWidening(AssertionError):
-    """The known widening at the optixstuff dispersion input cast."""
-
-
 @pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
 @pytest.mark.parametrize("corrected", [False, True])
 @pytest.mark.parametrize(
     "closed_dispersion",
     [
         True,
-        pytest.param(
-            False,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=_OptixstuffDispersionWidening,
-                reason="optixstuff dispersion_px widens the input to float64",
-            ),
-        ),
+        False,
     ],
     ids=["closed-dispersion", "optixstuff-dispersion"],
 )
@@ -255,16 +243,7 @@ def test_detector_centroids_precision_closure(
     bound = float(ulps(16, np.float32(1)))
     np.testing.assert_allclose(evaluate(*args), expected, rtol=bound, atol=0)
     precision_pair(evaluate, args, bound=bound)
-    try:
-        assert_precision_closed(evaluate, *canonical(args, precision="float32"))
-    except AssertionError as error:
-        if not closed_dispersion and re.fullmatch(
-            r".*/optixstuff/disperser\.py:155:20 \(LensletDisperser\.dispersion_px\)"
-            r": precision widened to float64",
-            str(error),
-        ):
-            raise _OptixstuffDispersionWidening(str(error)) from error
-        raise
+    assert_precision_closed(evaluate, *canonical(args, precision="float32"))
 
 
 def _rms(ir, w):
