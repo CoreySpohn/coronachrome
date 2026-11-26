@@ -9,6 +9,7 @@ import math
 
 import jax
 import jax.numpy as jnp
+from hwoutils.precision import like
 from jax.scipy.special import erf
 
 _SQRT2 = math.sqrt(2.0)
@@ -37,13 +38,33 @@ def moffat_psflet(dx, dy, alpha_px, beta, n_quad=5):
     No closed form, so the pixel is integrated by a midpoint-rule average over an
     ``n_quad x n_quad`` sub-grid. An overall normalization constant is irrelevant
     because ``build_ir`` normalizes the full footprint before detector clipping.
+
+    Args:
+        dx: Spectral-axis pixel offsets from the centroid [px].
+        dy: Spatial-axis pixel offsets from the centroid [px].
+        alpha_px: Moffat core width [px].
+        beta: Moffat power-law index.
+        n_quad: Number of midpoint samples along each pixel axis.
+
+    Returns:
+        Integrated profile weights at the supplied offsets.
     """
-    sub = jnp.linspace(-0.5 + 0.5 / n_quad, 0.5 - 0.5 / n_quad, n_quad)
+    dtype = jnp.result_type(dx, dy, alpha_px, beta, 1.0)
+    dx, dy, alpha_px, beta = (
+        jnp.asarray(x, dtype=dtype) for x in (dx, dy, alpha_px, beta)
+    )
+    edge = like(0.5 - 0.5 / n_quad, dx)
+    sub = jnp.linspace(-edge, edge, n_quad)
     uu, vv = jnp.meshgrid(sub, sub, indexing="ij")
     uu, vv = uu.reshape(-1), vv.reshape(-1)
     r2 = (dx[..., None] + uu) ** 2 + (dy[..., None] + vv) ** 2
     prof = (1.0 + r2 / alpha_px**2) ** (-beta)
     return prof.mean(axis=-1)
+
+
+def _smear_shifts(smear_px, n_sub, ref):
+    half = 0.5 * like(smear_px, ref)
+    return jnp.linspace(-half, half, n_sub)
 
 
 def psflet_weights(dx, dy, kind, params, smear_px, n_sub=5):
@@ -60,11 +81,18 @@ def psflet_weights(dx, dy, kind, params, smear_px, n_sub=5):
     Returns:
         Weights with the same shape as ``dx``.
     """
-    shifts = jnp.linspace(-0.5 * smear_px, 0.5 * smear_px, n_sub)
+    if kind == "gaussian":
+        profile = gaussian_psflet
+        params = (params[0],)
+    else:
+        profile = moffat_psflet
+        params = (params[0], params[1])
+    dtype = jnp.result_type(dx, dy, *params, smear_px, 1.0)
+    dx, dy = (jnp.asarray(x, dtype=dtype) for x in (dx, dy))
+    params = tuple(jnp.asarray(value, dtype=dtype) for value in params)
+    shifts = _smear_shifts(smear_px, n_sub, dx)
 
     def one(shift):
-        if kind == "gaussian":
-            return gaussian_psflet(dx - shift, dy, params[0])
-        return moffat_psflet(dx - shift, dy, params[0], params[1])
+        return profile(dx - shift, dy, *params)
 
     return jnp.mean(jax.vmap(one)(shifts), axis=0)

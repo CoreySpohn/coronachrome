@@ -8,12 +8,14 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid, square_rectangle_area
+from hwoutils.leaves import canonical
 from hwoutils.numerics import roundoff
-from hwoutils.testing import ulps
+from hwoutils.testing import assert_precision_closed, precision_pair, ulps
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import Image, Measure
 
 from coronachrome.build import build_ir
+from coronachrome.extract import amplitude_basis
 from coronachrome.render import IFSRenderer, spatial_sample
 
 
@@ -36,6 +38,48 @@ def _renderer(n=6, n_bands=5, fp=(64, 64), *, grid_kind="square", step=0.1):
     lam = jnp.linspace(640.0, 680.0, n_bands)
     ir = build_ir(disp, fp_grid=sky_grid(fp, step), bands=bands_at(lam))
     return IFSRenderer(ir), ir, fp, n_bands
+
+
+@pytest.fixture(scope="module")
+def _precision_renderer():
+    renderer, ir, shape, n_bands = _renderer(n=2, n_bands=2, fp=(6, 6))
+    cube = jnp.linspace(0.25, 1.0, n_bands * np.prod(shape)).reshape(n_bands, *shape)
+    return renderer, focal_image(cube, ir.fp_grid, measure=Measure.density("grid"))
+
+
+@pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
+@pytest.mark.parametrize(
+    "entry",
+    [
+        "spatial_sample",
+        "amplitude_basis",
+        "H_mono",
+        "forward_spmv",
+        "forward_streaming",
+    ],
+)
+def test_render_precision_closure(_precision_renderer, entry):
+    """Allow 32 rounding units at the peak output for positive fluxes.
+
+    A rotated two-pixel lenslet can touch at most 16 focal pixels. Each
+    detector pixel receives at most one tap from each of eight channel-band
+    pairs. Add eight units for input/table rounding, products and the density
+    area factor. The direct matvec assembles the BCOO inside the trace.
+    """
+
+    def evaluate(renderer, cube):
+        if entry == "spatial_sample":
+            return spatial_sample(cube, renderer.ir)
+        if entry == "amplitude_basis":
+            return amplitude_basis(cube, renderer.ir)
+        if entry == "H_mono":
+            spectra = spatial_sample(cube, renderer.ir)
+            return IFSRenderer(renderer.ir).H_mono @ spectra.ravel()
+        return getattr(renderer, entry)(cube).data
+
+    args = _precision_renderer
+    assert_precision_closed(evaluate, *canonical(args, precision="float32"))
+    precision_pair(evaluate, args, bound=float(ulps(32, np.float32(1))))
 
 
 def test_forward_spmv_shape_and_flux():

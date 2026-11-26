@@ -1,11 +1,13 @@
 """Tests for PSFlet template packs and the template-mode IR build."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
+from hwoutils.leaves import canonical
 from hwoutils.numerics import sum_roundoff
-from hwoutils.testing import ulps
+from hwoutils.testing import assert_precision_closed, precision_pair, ulps
 from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
 from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack, save_psflet_pack
@@ -43,6 +45,122 @@ def _gaussian_pack(lam, sigma=0.7, ref_nm=660.0, **kwargs):
     return analytic_psflet_pack(
         "gaussian", jnp.array([sigma]), lam, psflet_ref_nm=ref_nm, **kwargs
     )
+
+
+@pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
+@pytest.mark.parametrize(
+    ("n_waves", "host_wavelength"), [(1, False), (2, False), (2, True)]
+)
+def test_template_weights_precision_closure(n_waves, host_wavelength):
+    """Allow 40 rounding units for a conditioned uniform template grid.
+
+    The wavelength knots and query are exactly representable. Allow eight
+    units for wavelength interpolation, eight for the shift and offset grid
+    coordinates, 16 for the four bilinear products and their sum, and eight
+    for the five-sample smear reduction. The scale is the peak sampled weight.
+    """
+    pack = analytic_psflet_pack(
+        "gaussian",
+        [0.75],
+        [660.0] if n_waves == 1 else [640.0, 680.0],
+        half_extent=2.0,
+        step=0.25,
+        psflet_ref_nm=660.0,
+    )
+    dx = jnp.array([[-0.75, -0.25, 0.125, 0.5]])
+    dy = jnp.array([[0.5, 0.125, -0.25, -0.75]])
+
+    def evaluate(pack, dx, dy, wave):
+        wave = 660.0 if host_wavelength else wave
+        return template_weights(pack, dx, dy, wave, jnp.zeros(1, dtype=jnp.int32), 0.25)
+
+    args = (pack, dx, dy, jnp.array(660.0))
+    assert_precision_closed(evaluate, *canonical(args, precision="float32"))
+    precision_pair(evaluate, args, bound=float(ulps(40, np.float32(1))))
+
+
+def test_close_template_wavelengths_use_local_differences():
+    """Constant zero and one planes give the blend fraction at every pixel.
+
+    The decimal wavelengths span 0.001 nm and the query is 0.000338 nm above
+    the first knot. Allow 16 units for the blend, bilinear taps and smear.
+    """
+    pack = PsfletPack(
+        jnp.broadcast_to(jnp.array([0.0, 1.0])[None, :, None, None], (1, 2, 2, 2)),
+        jnp.array([-1.0, 1.0]),
+        [650.0, 650.001],
+        jnp.zeros((1, 2)),
+        TEMPLATE_ORIGIN,
+    )
+    dx = jnp.zeros((1, 1))
+    field = jnp.zeros(1, dtype=jnp.int32)
+
+    def evaluate(pack, dx):
+        return template_weights(pack, dx, dx, 650.000338, field, 0.125)
+
+    args = (pack, dx)
+    narrow = canonical(args, precision="float32")
+    bound = float(ulps(16, np.float32(1)))
+    for evaluate_fn in (evaluate, jax.jit(evaluate)):
+        np.testing.assert_allclose(evaluate_fn(*narrow), 0.338, atol=0, rtol=bound)
+    if dx.dtype == np.float64:
+        assert_precision_closed(evaluate, *narrow)
+        precision_pair(evaluate, args, bound=bound)
+
+
+@pytest.mark.parametrize("wave_dtype", [np.float32, np.float64])
+def test_traced_template_query_preserves_local_spacing(precision, wave_dtype):
+    """A slope of 1000/nm exposes rounding of either decimal knot.
+
+    The reference uses the actual query supplied to JAX in each lane. Allow
+    eight rounding units for the fractional distance and four bilinear taps.
+    """
+    lo, hi = 650.00001, 650.00101
+    wave = wave_dtype(650.000338)
+    if precision == np.float32:
+        wave = np.float32(wave)
+    pack = PsfletPack(
+        jnp.broadcast_to(
+            jnp.array([0.0, 1.0], dtype=jnp.float32)[None, :, None, None],
+            (1, 2, 2, 2),
+        ),
+        jnp.array([-1.0, 1.0], dtype=jnp.float32),
+        [lo, hi],
+        jnp.zeros((1, 2), dtype=jnp.float32),
+        TEMPLATE_ORIGIN,
+    )
+    dx = jnp.zeros((1, 1), dtype=jnp.float32)
+    field = jnp.zeros(1, dtype=jnp.int32)
+
+    def evaluate(wave):
+        return template_weights(pack, dx, dx, wave, field, 0.0, n_sub=1)
+
+    expected = (float(wave) - lo) / (hi - lo)
+    bound = float(ulps(8, wave.dtype.type(1)))
+    for evaluate_fn in (evaluate, jax.jit(evaluate)):
+        actual = evaluate_fn(wave)
+        assert actual.dtype == wave.dtype
+        np.testing.assert_allclose(actual, expected, rtol=bound, atol=0)
+
+
+def test_template_numpy_offsets_match_jit():
+    """A constant unit plane gives exact unit taps in either execution mode."""
+    pack = PsfletPack(
+        jnp.ones((1, 1, 2, 2), dtype=jnp.float32),
+        jnp.array([-1.0, 1.0], dtype=jnp.float32),
+        [650.0],
+        jnp.zeros((1, 2), dtype=jnp.float32),
+        TEMPLATE_ORIGIN,
+    )
+    dx = np.zeros((1, 1), dtype=np.float32)
+
+    def evaluate(dx):
+        return template_weights(pack, dx, dx, 650.0, jnp.zeros(1, dtype=jnp.int32), 0.0)
+
+    for evaluate_fn in (evaluate, jax.jit(evaluate)):
+        result = evaluate_fn(dx)
+        assert result.dtype == np.float32
+        np.testing.assert_array_equal(result, [[1.0]])
 
 
 def test_build_splits_at_template_and_throughput_breaks():
@@ -134,12 +252,17 @@ def test_template_mode_requires_pack():
 
 
 def test_template_mode_loads_descriptor_path(tmp_path):
-    """The descriptor's psflet_pack_path is loaded when no pack is passed."""
+    """The same calibrated pack gives identical rows and taps by either route."""
     lam = jnp.array([640.0, 660.0, 680.0])
-    pack = _gaussian_pack(lam)
+    pack = _gaussian_pack(
+        lam, centroids=jnp.array([[[0.2, 0.1], [0.3, 0.0], [0.4, -0.1]]])
+    )
     path = tmp_path / "pack.npz"
     save_psflet_pack(path, pack)
-    disp = _disp(4, psflet_kind="template", psflet_pack_path=str(path))
+    disp = canonical(
+        _disp(4, psflet_kind="template", psflet_pack_path=str(path)),
+        precision="float32",
+    )
     ir_from_path = build_ir(
         disp, fp_grid=sky_grid((32, 32), 0.2 / (2.0)), bands=bands_at(lam)
     )
@@ -149,7 +272,9 @@ def test_template_mode_loads_descriptor_path(tmp_path):
         fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
         bands=bands_at(lam),
     )
-    assert jnp.allclose(ir_from_path.det_vals, ir_from_arg.det_vals)
+    assert ir_from_path.det_vals.dtype == ir_from_arg.det_vals.dtype == np.float32
+    np.testing.assert_array_equal(ir_from_path.det_rows, ir_from_arg.det_rows)
+    np.testing.assert_array_equal(ir_from_path.det_vals, ir_from_arg.det_vals)
 
 
 def test_band_outside_pack_raises():

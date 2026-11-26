@@ -311,7 +311,7 @@ def test_centroids_follow_the_documented_dispersion_law(setup):
 
 
 def test_template_correction_moves_markers_off_the_geometric_trace():
-    """A calibrated centroid correction is applied once, to the markers only."""
+    """The correction shifts the markers, and host centroids set pixel support."""
     disperser = _disperser(psflet_kind="template")
     shift = np.zeros((1, LAM.shape[0], 2))
     shift[0, :, 1] = 0.75  # +0.75 px along y at every wavelength
@@ -333,13 +333,18 @@ def test_template_correction_moves_markers_off_the_geometric_trace():
     markers = result.artists["scatter"].get_offsets()
     assert np.allclose(markers[:, 0], trace.get_xdata())
     assert np.allclose(markers[:, 1] - trace.get_ydata(), 0.75)
-    # the markers are where the operator placed the footprints
-    xc, yc = detector_centroids(disperser, LAM, psflet_pack=pack)
+    # Lenslet 12 is at the layout origin. The center band's x coordinate is
+    # exactly 63.5 px in the host geometry and rounds to the even column 64.
+    waves = np.array([band.geometric_center_nm for band in ir.bands])
+    expected_x = 63.5 + 140 * np.log(waves / 660.0)
+    expected_y = 47.5 + 0.75
+    assert np.allclose(markers[:, 0], expected_x)
+    assert np.allclose(markers[:, 1], expected_y)
     rows = np.asarray(ir.det_rows[12])
     center_pixel = rows[:, rows.shape[1] // 2]
     cy, cx = np.divmod(center_pixel, DET_SHAPE[1])
-    assert np.array_equal(cx, np.round(np.asarray(xc[12])))
-    assert np.array_equal(cy, np.round(np.asarray(yc[12])))
+    np.testing.assert_array_equal(cx, np.rint(expected_x))
+    np.testing.assert_array_equal(cy, np.rint(expected_y))
 
 
 def test_footprint_image_is_the_forward_operator_applied_to_unit_spectra(setup):

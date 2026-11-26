@@ -9,8 +9,13 @@ builders without touching optixstuff.
 import functools
 import warnings
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
+from hwoutils.leaves import canonical, is_traced
+from hwoutils.precision import like
+from hwoutils.radial import get_center
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import PixelGrid, footprint_overlap
 from optixstuff.psflet_pack import load_psflet_pack
@@ -21,14 +26,15 @@ from coronachrome.grids import LensletLayout
 from coronachrome.ir import SpatialChannelIR
 from coronachrome.psflet import psflet_weights
 from coronachrome.templates import (
+    _template_weights,
+    _wavelength_blend,
     check_template_origin,
     nearest_field_idx,
-    template_weights,
 )
 
 
 @functools.singledispatch
-def build_ir(disperser, bands, fp_grid, **kwargs):
+def build_ir(disperser, bands, fp_grid, **kwargs) -> SpatialChannelIR:
     """Build a SpatialChannelIR from a disperser descriptor.
 
     Args:
@@ -61,15 +67,15 @@ def _resolve_psflet_pack(disperser, psflet_pack):
     Raises:
         ValueError: The origin convention is unsupported or no pack is supplied.
     """
-    if psflet_pack is not None:
-        check_template_origin(psflet_pack)
-        return psflet_pack
-    if disperser.psflet_pack_path is not None:
-        return load_psflet_pack(disperser.psflet_pack_path)
-    raise ValueError(
-        'psflet_kind="template" needs a psflet_pack argument or a '
-        "psflet_pack_path on the disperser descriptor"
-    )
+    if psflet_pack is None:
+        if disperser.psflet_pack_path is None:
+            raise ValueError(
+                'psflet_kind="template" needs a psflet_pack argument or a '
+                "psflet_pack_path on the disperser descriptor"
+            )
+        psflet_pack = load_psflet_pack(disperser.psflet_pack_path)
+    check_template_origin(psflet_pack)
+    return psflet_pack
 
 
 def _validate_pack_for_band(pack, bands, half):
@@ -108,8 +114,24 @@ def _validate_pack_for_band(pack, bands, half):
 
 
 def lenslet_positions(disperser, *, layout=None):
-    """Centres in lenslet pitches; layout owns the origin convention."""
-    return _layout(disperser, layout).positions()
+    """Return lenslet centers relative to the layout origin.
+
+    Args:
+        disperser: Descriptor supplying the layout and working precision.
+        layout: Optional layout matching the disperser.
+
+    Returns:
+        Lenslet centers in lenslet pitches, in channel order.
+    """
+    dtype = jnp.result_type(disperser.dispersion_coeffs, 1.0)
+    return _layout_positions(_layout(disperser, layout), dtype)
+
+
+def _layout_positions(layout, dtype):
+    if type(layout).positions is LensletLayout.positions:
+        return layout.positions(dtype=dtype)
+    # The public override signature did not require a dtype keyword.
+    return canonical(jnp.asarray(layout.positions()), precision=dtype)
 
 
 def _layout(disperser, layout):
@@ -124,27 +146,45 @@ def _layout(disperser, layout):
 
 
 def lenslet_cell_centers(disperser, fp_grid, *, layout=None, positions=None):
-    """Return focal-plane pixel (x,y) centres using the declared arcsec grid.
+    """Return focal-plane pixel (x, y) centers using the declared arcsec grid.
 
     The layout is rotated by angle_rad in the input grid's oriented unit
     plane; the sky origin is fp_grid.center_x, fp_grid.center_y.
+
+    Args:
+        disperser: Descriptor supplying sky pitch and rotation.
+        fp_grid: Focal-plane pixel grid in arcsec.
+        layout: Optional layout matching the disperser.
+        positions: Optional lenslet centers in lenslet pitches.
+
+    Returns:
+        Focal-plane x and y pixel coordinates in channel order.
     """
     if fp_grid.unit != "arcsec":
         raise ValueError("fp_grid must use arcsec; convert lod through its Frame")
     if disperser.sky_pitch_arcsec is None:
         raise ValueError("sky_pitch_arcsec is required")
-    positions = (
-        lenslet_positions(disperser, layout=layout) if positions is None else positions
+    dtype = jnp.result_type(
+        disperser.dispersion_coeffs,
+        disperser.angle_rad,
+        disperser.sky_pitch_arcsec,
+        *jax.tree.leaves(positions),
+        1.0,
     )
-    ca, sa = jnp.cos(disperser.angle_rad), jnp.sin(disperser.angle_rad)
+    if positions is None:
+        positions = _layout_positions(_layout(disperser, layout), dtype)
+    positions = jnp.asarray(positions, dtype=dtype)
+    angle = jnp.asarray(disperser.angle_rad, dtype=dtype)
+    ca, sa = jnp.cos(angle), jnp.sin(angle)
+    pitch = jnp.asarray(disperser.sky_pitch_arcsec, dtype=dtype)
     x, y = positions[:, 0], positions[:, 1]
     return fp_grid.unit_to_pixel(
-        disperser.sky_pitch_arcsec * (ca * x - sa * y),
-        disperser.sky_pitch_arcsec * (sa * x + ca * y),
+        pitch * (ca * x - sa * y),
+        pitch * (sa * x + ca * y),
     )
 
 
-def _placement_centroids(disperser, positions, lam, pack):
+def _placement_centroids(disperser, positions, wavelengths_nm, pack, dtype):
     """Detector centroids the footprints are placed at, plus the anchor index.
 
     The geometric dispersion trace (:func:`lenslet_centroids`), shifted by a
@@ -152,32 +192,32 @@ def _placement_centroids(disperser, positions, lam, pack):
     ``centroids``. Returns ``(xc, yc, field_idx)``; ``field_idx`` is None
     without a pack.
     """
-    scale = disperser.pitch_m / disperser.pixsize_m
-    disp = disperser.dispersion_px(lam)
+    lam = jnp.atleast_1d(jnp.asarray(wavelengths_nm, dtype=dtype))
+    pitch, pixsize, angle = (
+        jnp.asarray(value, dtype=dtype)
+        for value in (disperser.pitch_m, disperser.pixsize_m, disperser.angle_rad)
+    )
+    disp = canonical(disperser.dispersion_px(lam), precision=dtype)
     xc, yc = lenslet_centroids(
-        positions, scale, disperser.angle_rad, disp, disperser.detector_shape
+        positions, pitch / pixsize, angle, disp, disperser.detector_shape
     )
     if pack is None:
         return xc, yc, None
     field_idx = nearest_field_idx(pack, positions)
     if pack.centroids is not None:
-        # Per-anchor (dx, dy) wavecal corrections, interpolated to the
-        # requested wavelengths, applied before footprint placement. A
-        # one-wavelength pack is constant (jnp.interp holds its end value).
-        pack_nm = pack.wavelengths_nm.array()
-
-        def interp_corr(anchor_corr):
-            return jnp.stack(
-                [
-                    jnp.interp(lam, pack_nm, anchor_corr[:, 0]),
-                    jnp.interp(lam, pack_nm, anchor_corr[:, 1]),
-                ],
-                axis=-1,
+        if len(pack.wavelengths_nm) == 1:
+            corr = pack.centroids[field_idx]
+        else:
+            lower, frac = _wavelength_blend(
+                pack.wavelengths_nm.values, wavelengths_nm, dtype
             )
-
-        corr = jax.vmap(interp_corr)(pack.centroids)  # (n_field, n_samples, 2)
-        xc = xc + corr[field_idx, :, 0]
-        yc = yc + corr[field_idx, :, 1]
+            lower = jnp.atleast_1d(lower)
+            frac = jnp.atleast_1d(frac)[:, None]
+            left = pack.centroids[field_idx[:, None], lower]
+            right = pack.centroids[field_idx[:, None], lower + 1]
+            corr = (1.0 - frac) * left + frac * right
+        xc = xc + corr[..., 0]
+        yc = yc + corr[..., 1]
     return xc, yc, field_idx
 
 
@@ -206,21 +246,36 @@ def detector_centroids(
             the descriptor's ``psflet_pack_path``, as in :func:`build_ir`).
         positions: Optional ``(n, 2)`` lenslet-index coordinates (default:
             the descriptor's whole grid, in channel order).
-        layout: LensletLayout defining the origin convention.
         corrected: Apply a template pack's per-anchor centroid correction.
             False returns the geometric dispersion trace alone.
+        layout: LensletLayout defining the origin convention.
 
     Returns:
         Tuple ``(xc, yc)``, each ``(n, n_samples)``.
     """
-    lam = jnp.atleast_1d(jnp.asarray(wavelengths_nm, dtype=float))
-    if positions is None:
-        positions = lenslet_positions(disperser, layout=layout)
-    positions = jnp.asarray(positions, dtype=float)
     pack = None
     if corrected and disperser.psflet_kind == "template":
         pack = _resolve_psflet_pack(disperser, psflet_pack)
-    xc, yc, _ = _placement_centroids(disperser, positions, lam, pack)
+    wavecal = (
+        ()
+        if pack is None or pack.centroids is None
+        else (pack.centroids, pack.field_xy)
+    )
+    dtype = jnp.result_type(
+        disperser.dispersion_coeffs,
+        disperser.pitch_m,
+        disperser.pixsize_m,
+        disperser.angle_rad,
+        disperser.lam_ref_nm,
+        *jax.tree.leaves((positions, wavelengths_nm, wavecal)),
+        1.0,
+    )
+    if positions is None:
+        positions = _layout_positions(_layout(disperser, layout), dtype)
+    positions = jnp.asarray(positions, dtype=dtype)
+    if any(is_traced(leaf) for leaf in jax.tree.leaves(wavelengths_nm)):
+        wavelengths_nm = jnp.asarray(wavelengths_nm)
+    xc, yc, _ = _placement_centroids(disperser, positions, wavelengths_nm, pack, dtype)
     return xc, yc
 
 
@@ -233,16 +288,37 @@ def detector_trace_origin(disperser):
     scaled lenslet offset plus the dispersion offset along x. It coincides
     with the reference-wavelength centroid of lenslet ``(0, 0)`` only when
     the dispersion polynomial has no constant term.
+
+    Args:
+        disperser: Descriptor specifying the detector shape.
+
+    Returns:
+        Detector center coordinates in x, y order.
     """
-    scale = disperser.pitch_m / disperser.pixsize_m
-    xc, yc = lenslet_centroids(
-        jnp.zeros((1, 2)),
-        scale,
-        disperser.angle_rad,
-        jnp.zeros(1),
-        disperser.detector_shape,
-    )
-    return float(xc[0, 0]), float(yc[0, 0])
+    cy, cx = get_center(disperser.detector_shape)
+    return cx, cy
+
+
+def _band_response(quadrature, profiles, valid, throughput):
+    # Normalize the modeled footprint before discarding off-detector light.
+    total = profiles.sum(axis=-1, keepdims=True)
+    profiles = profiles / jnp.clip(total, like(1e-12, total), None)
+    profiles = jnp.where(valid[:, :, None, :], profiles, like(0.0, profiles))
+    response = profiles.transpose(1, 2, 0, 3) * throughput[:, :, None, None]
+    det_vals = quadrature.mean(response).transpose(1, 0, 2)
+    # A dark template can have zero weight before detector clipping.
+    outside = ~valid.any(axis=-1, keepdims=True)
+    lost = (profiles.sum(axis=-1) == 0) & ((total[..., 0] > 0) | outside)
+    return det_vals, lost & quadrature.active[None]
+
+
+def _footprint_axis(centroids, taps, n_bands, dtype):
+    centroids = np.asarray(centroids)
+    nominal = np.rint(centroids[:, :n_bands]).astype(np.int64)
+    pixels = nominal[..., None] + taps.ravel()
+    samples = centroids[:, n_bands:].reshape(centroids.shape[0], n_bands, -1)
+    offsets = canonical(pixels[:, :, None, :] - samples[..., None], precision=dtype)
+    return pixels, offsets
 
 
 @build_ir.register
@@ -277,39 +353,77 @@ def _(
         quadrature_order: Number of nodes per spectral integration interval.
 
     Returns:
-        The spatial collection and detector dispersion operator.
+        The spatial collection and detector dispersion operator at the
+        working precision of the disperser.
 
     Raises:
+        TypeError: The builder received traced inputs.
         ValueError: The geometry or template pack is incompatible with the
             requested grid, wavelength bands or footprint.
     """
     if fp_grid.unit != "arcsec":
         raise ValueError("fp_grid must use arcsec; convert lod through its Frame")
+    if any(is_traced(leaf) for leaf in jax.tree.leaves((disperser, psflet_pack))):
+        raise TypeError(
+            "build_ir requires concrete inputs; build it outside a JAX trace"
+        )
     if disperser.sky_pitch_arcsec is None or disperser.sky_pitch_arcsec <= 0:
         raise ValueError("sky_pitch_arcsec must be positive")
     layout = _layout(disperser, layout)
     bands = tuple(bands)
-    lam = jnp.asarray([band.geometric_center_nm for band in bands])
+    analytic = (
+        ()
+        if disperser.psflet_kind == "template"
+        else (disperser.psflet_params, disperser.psflet_ref_nm)
+    )
+    dtype = jnp.result_type(
+        disperser.dispersion_coeffs,
+        disperser.pitch_m,
+        disperser.pixsize_m,
+        disperser.angle_rad,
+        disperser.lam_ref_nm,
+        disperser.sky_pitch_arcsec,
+        *analytic,
+        1.0,
+    )
+    sky_pitch, angle = float(disperser.sky_pitch_arcsec), float(disperser.angle_rad)
     pack = None
-    models = [disperser.throughput_element]
-    if disperser.psflet_kind == "template":
-        pack = _resolve_psflet_pack(disperser, psflet_pack)
-        _validate_pack_for_band(pack, bands, half)
-        models.append(pack)
-    quadrature = Quadrature.build(bands, *models, order=quadrature_order)
-    lenslet_grid, lenslet_indices = layout.image_geometry(
-        disperser.sky_pitch_arcsec, float(disperser.angle_rad), fp_grid.orientation
-    )
-    collection_grids = layout.collection_grids(
-        disperser.sky_pitch_arcsec, float(disperser.angle_rad), fp_grid.orientation
-    )
-    collection_overlap = footprint_overlap(fp_grid, collection_grids)
-    fp_px_per_lenslet = disperser.sky_pitch_arcsec / fp_grid.pixel_area**0.5
+    # The upstream builders and disperser evaluators return JAX arrays. Read
+    # them at host precision before choosing support or differencing offsets.
+    with jax.enable_x64():  # precision-ok: concrete host-only IR setup
+        models = [disperser.throughput_element]
+        if disperser.psflet_kind == "template":
+            pack = _resolve_psflet_pack(disperser, psflet_pack)
+            _validate_pack_for_band(pack, bands, half)
+            models.append(pack)
+        quadrature = Quadrature.build(bands, *models, order=quadrature_order)
+        nodes = np.asarray(quadrature.nodes_nm).ravel()
+        centers = [band.geometric_center_nm for band in bands]
+        waves = np.concatenate((centers, nodes))
+        host_dtype = np.dtype(np.float64)
+        positions = _layout_positions(layout, host_dtype)
+        xc, yc, field_idx = _placement_centroids(
+            disperser, positions, waves, pack, host_dtype
+        )
+        throughput = np.asarray(disperser.throughput(nodes), dtype=host_dtype).reshape(
+            quadrature.nodes_nm.shape
+        )
+        cx, cy = lenslet_cell_centers(disperser, fp_grid, positions=positions)
+        lenslet_grid, lenslet_indices = layout.image_geometry(
+            sky_pitch, angle, fp_grid.orientation
+        )
+        collection_grids = layout.collection_grids(
+            sky_pitch, angle, fp_grid.orientation
+        )
+        overlap = footprint_overlap(fp_grid, collection_grids)
+
+    collection_overlap = canonical(overlap, precision=dtype)
+    fp_px_per_lenslet = sky_pitch / fp_grid.pixel_area**0.5
     if fp_px_per_lenslet < 2:
         warnings.warn(
             "the focal-plane cube undersamples the lenslet pitch (< 2)", stacklevel=2
         )
-    cx, cy = lenslet_cell_centers(disperser, fp_grid, layout=layout)
+    cx, cy = np.asarray(cx), np.asarray(cy)
     # Transform one cell's affine half-extents into source pixel coordinates.
     (a, b), (c, d) = fp_grid.basis
     det = a * d - b * c
@@ -318,7 +432,7 @@ def _(
     ext_y = (abs((a * g - c * e) / det) + abs((a * h - c * f) / det)) / 2
     ny_fp, nx_fp = fp_grid.shape
     if bool(
-        jnp.any(
+        np.any(
             (cx - ext_x < -0.5)
             | (cx + ext_x > nx_fp - 0.5)
             | (cy - ext_y < -0.5)
@@ -330,43 +444,40 @@ def _(
             "those spaxels lose flux",
             stacklevel=2,
         )
-    positions = layout.positions()
     ny, nx = disperser.detector_shape
-    xc, yc, _ = _placement_centroids(disperser, positions, lam, pack)
-    off = jnp.arange(-half, half + 1)
-    dy, dx = jnp.meshgrid(off, off, indexing="ij")
-    px = jnp.round(xc)[..., None] + dx.ravel()
-    py = jnp.round(yc)[..., None] + dy.ravel()
-    nodes = quadrature.nodes_nm.ravel()
-    xq, yq, field_idx = _placement_centroids(disperser, positions, nodes, pack)
-    xq = xq.reshape(len(positions), len(bands), -1)
-    yq = yq.reshape(len(positions), len(bands), -1)
-    dxq, dyq = px[:, :, None, :] - xq[..., None], py[:, :, None, :] - yq[..., None]
+    off = np.arange(-half, half + 1, dtype=np.int32)
+    dy, dx = np.meshgrid(off, off, indexing="ij")
+    px, dxq = _footprint_axis(xc, dx, len(bands), dtype)
+    py, dyq = _footprint_axis(yc, dy, len(bands), dtype)
+    throughput = canonical(throughput, precision=dtype)
+    # The numerical quadrature consumes only its weights and node shape.
+    weights = canonical(np.asarray(quadrature.weights_nm), precision=dtype)
+    quadrature = eqx.tree_at(lambda rule: rule.weights_nm, quadrature, weights)
+    if pack is not None:
+        profile_args = _wavelength_blend(pack.wavelengths_nm.values, nodes, dtype)
+        pack = canonical(pack, precision=dtype)
 
-    def profile(dx_w, dy_w, wave):
-        if pack is not None:
-            return template_weights(pack, dx_w, dy_w, wave, field_idx, 0.0)
-        params = disperser.psflet_params.at[0].multiply(wave / disperser.psflet_ref_nm)
-        return psflet_weights(dx_w, dy_w, disperser.psflet_kind, params, 0.0)
+        def profile(dx_w, dy_w, blend):
+            return _template_weights(pack, dx_w, dy_w, field_idx, 0.0, 5, blend)
+    else:
+        profile_args = canonical(
+            nodes / float(disperser.psflet_ref_nm), precision=dtype
+        )
+        params = canonical(disperser.psflet_params, precision=dtype)
+
+        def profile(dx_w, dy_w, scale):
+            scaled = params.at[0].multiply(scale)
+            return psflet_weights(dx_w, dy_w, disperser.psflet_kind, scaled, 0.0)
 
     nc, nw, nq, npix = dxq.shape
-    g = jax.vmap(profile, in_axes=(1, 1, 0), out_axes=1)(
-        dxq.reshape(nc, nw * nq, npix), dyq.reshape(nc, nw * nq, npix), nodes
+    profiles = jax.vmap(profile, in_axes=(1, 1, 0), out_axes=1)(
+        dxq.reshape(nc, nw * nq, npix), dyq.reshape(nc, nw * nq, npix), profile_args
     ).reshape(nc, nw, nq, npix)
-    valid = (px >= 0) & (px < nx) & (py >= 0) & (py < ny)
-    # Normalize the modeled footprint before discarding off-detector light.
-    total = g.sum(axis=-1, keepdims=True)
-    g = g / jnp.clip(total, 1e-12, None)
-    g = jnp.where(valid[:, :, None, :], g, 0.0)
-    throughput = disperser.throughput(nodes).reshape(quadrature.nodes_nm.shape)
+    valid = jnp.asarray((px >= 0) & (px < nx) & (py >= 0) & (py < ny))
     # Mean response per detector pixel for constant spectral density in a band.
-    response = g.transpose(1, 2, 0, 3) * throughput[:, :, None, None]
-    det_vals = quadrature.mean(response).transpose(1, 0, 2)
-    det_rows = jnp.clip((py * nx + px).astype(jnp.int32), 0, ny * nx - 1)
-    # A dark template can have zero weight before detector clipping.
-    outside = ~valid.any(axis=-1, keepdims=True)
-    lost = (g.sum(axis=-1) == 0) & ((total[..., 0] > 0) | outside)
-    if bool(jnp.any(lost & quadrature.active[None])):
+    det_vals, lost = _band_response(quadrature, profiles, valid, throughput)
+    det_rows = jnp.asarray(np.clip(py * nx + px, 0, ny * nx - 1), dtype=jnp.int32)
+    if bool(jnp.any(lost)):
         warnings.warn(
             "(channel, wavelength) footprints fell off the detector", stacklevel=2
         )
@@ -376,7 +487,7 @@ def _(
         bands=bands,
         fp_grid=fp_grid,
         lenslet_grid=lenslet_grid,
-        lenslet_indices=lenslet_indices,
+        lenslet_indices=jnp.asarray(lenslet_indices, dtype=jnp.int32),
         layout=layout,
         collection_grids=collection_grids,
         collection_overlap=collection_overlap,
