@@ -8,6 +8,7 @@ import matplotlib
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
+from hwoutils.testing import ulps
 from optixstuff.disperser import LensletDisperser
 
 matplotlib.use("Agg")
@@ -200,21 +201,34 @@ def test_no_optical_center_is_invented(setup):
 
 
 def test_drawn_cells_are_the_cells_the_operator_integrates(setup):
-    """Each outlined cell has the area and centroid of its spatial footprint."""
+    """Each outlined cell has the area, centroid and angle of its footprint.
+
+    Six affine roundings at the grid extent bound the corner coordinates.
+    Propagate that coordinate error through perimeter times corner distance
+    for area, and through two endpoints divided by side length for angle.
+    The centered shoelace sum allows twelve additional operations.
+    """
     disperser, _ir = setup
     channels = (0, 7, 12, 24)
     result = viz.plot_lenslet_cells(disperser, FP_GRID, channels=channels)
+    cx, cy = lenslet_cell_centers(disperser, FP_GRID)
+    coordinate_tol = float(ulps(6, cx.dtype.type(max(FP_SHAPE))))
+    corner_tol = np.sqrt(2) * coordinate_tol
+    area_tol = 4 * FP_PX * corner_tol + float(ulps(12, cx.dtype.type(FP_PX**2)))
+    angle_tol = 2 * corner_tol / FP_PX + float(ulps(1, cx.dtype.type(1)))
     for ch, patch in zip(channels, result.artists["ellipse"], strict=True):
         xy = patch.get_xy()[:4]
-        x, y = xy[:, 0], xy[:, 1]
+        center = xy.mean(axis=0)
+        x, y = (xy - center).T
         area = 0.5 * abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
-        assert area == pytest.approx(FP_PX**2, rel=1e-14)
-        cx, cy = lenslet_cell_centers(disperser, FP_GRID)
-        assert xy.mean(axis=0) == pytest.approx(
-            [float(cx[ch]), float(cy[ch])], abs=1e-14
+        assert area == pytest.approx(FP_PX**2, abs=area_tol, rel=0)
+        assert center == pytest.approx(
+            [float(cx[ch]), float(cy[ch])], abs=coordinate_tol, rel=0
         )
         edge = xy[1] - xy[0]
-        assert np.arctan2(edge[1], edge[0]) == pytest.approx(disperser.angle_rad)
+        assert np.arctan2(edge[1], edge[0]) == pytest.approx(
+            disperser.angle_rad, abs=angle_tol, rel=0
+        )
 
 
 def test_every_cell_outline_is_drawn_in_channel_order(setup):

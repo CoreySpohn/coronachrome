@@ -17,6 +17,7 @@ per-wavelength tabulation.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack
 
 from coronachrome.psflet import gaussian_psflet, moffat_psflet
@@ -62,7 +63,7 @@ def analytic_psflet_pack(
     Returns:
         A validated :class:`PsfletPack`.
     """
-    lam = jnp.asarray(wavelengths_nm, dtype=float)
+    lam = np.asarray(wavelengths_nm, dtype=np.float64)
     n_off = round(2.0 * half_extent / step) + 1
     offsets = jnp.linspace(-half_extent, half_extent, n_off)
     vv, uu = jnp.meshgrid(offsets, offsets, indexing="ij")

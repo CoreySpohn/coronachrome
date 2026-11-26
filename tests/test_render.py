@@ -8,6 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid, square_rectangle_area
+from hwoutils.numerics import roundoff
+from hwoutils.testing import ulps
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import Image, Measure
 
@@ -20,7 +22,7 @@ def _renderer(n=6, n_bands=5, fp=(64, 64), *, grid_kind="square", step=0.1):
         pitch_m=174e-6,
         sky_pitch_arcsec=0.2,
         pixsize_m=13e-6,
-        angle_rad=float(jnp.arcsin(1.0 / jnp.sqrt(5.0))),
+        angle_rad=float(np.arcsin(1 / np.sqrt(5))),
         lam_ref_nm=660.0,
         pix_per_reselt=2.0,
         dispersion_coeffs=jnp.array([100.0, 0.0]),
@@ -157,7 +159,13 @@ def test_end_to_end_point_source_lands_on_detector():
 
 
 def test_hex_grid_pipeline_streaming_matches_spmv():
-    """A hex-grid disperser builds and renders; streaming equals spmv."""
+    """Square cell flux and streaming agree with the area and sparse references.
+
+    Cell roundoff covers up to 16 overlaps of a rotated two-pixel square and
+    four scalar roundings for weight storage, products and area conversion.
+    The detector comparison budgets two products and two sums per contributor
+    at the local sum of absolute contributions, including signed cancellation.
+    """
     disp = LensletDisperser(
         pitch_m=174e-6,
         sky_pitch_arcsec=0.2,
@@ -181,12 +189,18 @@ def test_hex_grid_pipeline_streaming_matches_spmv():
     density = focal_image(
         jnp.full((5, 64, 64), 100.0), r.ir.fp_grid, measure=Measure.density("grid")
     )
-    assert jnp.allclose(spatial_sample(density, r.ir), 4.0, atol=2e-14, rtol=0)
+    flux = spatial_sample(density, r.ir)
+    tol = float(ulps(16 + 4, flux.dtype.type(4)))
+    np.testing.assert_allclose(flux, 4.0, atol=tol, rtol=0)
     cube = jnp.sin(jnp.arange(5 * 64 * 64, dtype=float).reshape(5, 64, 64))
-    assert jnp.allclose(
-        r.forward_streaming(focal_image(cube, r.ir.fp_grid)).data,
-        r.forward_spmv(focal_image(cube, r.ir.fp_grid)).data,
-        atol=1e-9,
+    image = focal_image(cube, r.ir.fp_grid)
+    streaming = r.forward_streaming(image).data
+    sparse = r.forward_spmv(image).data
+    scale = r.forward_spmv(focal_image(jnp.abs(cube), r.ir.fp_grid)).data
+    rows = np.asarray(r.ir.det_rows)[np.asarray(r.ir.det_vals) != 0]
+    n_terms = np.bincount(rows, minlength=scale.size).reshape(scale.shape)
+    np.testing.assert_array_equal(
+        abs(streaming - sparse) <= roundoff(scale, n_ops=4 * n_terms), True
     )
 
 
@@ -196,7 +210,9 @@ def test_spatial_sample_integrates_cell_area(n, grid_kind):
     """Fails if rotated collection uses deposition instead of aperture area.
 
     Independent half-plane vertex enumeration checks every clipped edge;
-    interior cells have area .04 arcsec^2. Float64 floor: 128 eps per cell.
+    interior cells have area .04 arcsec^2. The full-cell flux sets the
+    roundoff scale, with 16 overlap contributions, four weight and area
+    operations, 24 for four clipping edges, and eight for polygon area.
     Even/odd square origins and staggered square apertures are exercised.
     """
     angle = np.arcsin(1 / np.sqrt(5))
@@ -243,15 +259,17 @@ def test_spatial_sample_integrates_cell_area(n, grid_kind):
             assert (~interior).any()
         data = jnp.ones((2, size, size)) * jnp.array([1.0, 2.0])[:, None, None]
         expected = areas[:, None] / 0.01 * np.array([1.0, 2.0])
-        tol = 128 * np.finfo(float).eps
         for measure, scale in ((Measure.integral(), 1), (Measure.density("grid"), 100)):
             z = spatial_sample(
                 focal_image(data * scale, ir.fp_grid, measure=measure), ir
             )
-            np.testing.assert_allclose(z, expected, rtol=tol, atol=tol)
+            tol = ulps(16 + 4 + 24 + 8, jnp.asarray([4, 8], dtype=z.dtype))
+            np.testing.assert_array_equal(
+                np.abs(np.asarray(z) - expected) <= np.asarray(tol), True
+            )
         if size == 64:
             # Restores the original rotated 6x6 fixture's first lenslet to 4.
-            np.testing.assert_allclose(z[:, 0], 4.0, rtol=0, atol=tol)
+            np.testing.assert_allclose(z[:, 0], 4.0, rtol=0, atol=float(tol[0]))
 
 
 @vv.case("ifs-geometry", "code-verification")

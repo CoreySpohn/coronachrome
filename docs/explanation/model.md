@@ -146,9 +146,13 @@ extraction are float32-safe even for large lenslet grids, helped by the column
 equilibration above. Two cases need more care. An over-sampled spectrum (more
 wavelengths than the micro-spectrum resolves) makes neighboring columns of $H$
 near-duplicate, so the normal equations turn near-singular and the float32 solve can
-break down; reduce the wavelength count, set the global `x64` flag, or raise the
-`damping`. The covariance forms the normal operator explicitly, which squares the
-conditioning, so in practice it should be run under `x64`.
+break down. Reduce the wavelength count, enable x64, or raise `damping`.
+
+Covariance and error bars require both an x64-enabled process and a renderer
+with a float64 dispersion operator. Call `hwoutils.precision.enable_x64()`
+before building the renderer. If the renderer was built in float32, rebuild it
+with x64 enabled or supply an existing float64 renderer. These APIs raise
+`hwoutils.precision.PrecisionError` if either requirement is unmet.
 
 ## Units and normalization
 

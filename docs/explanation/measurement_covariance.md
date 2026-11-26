@@ -93,14 +93,22 @@ Requires user-supplied planet templates, speckle modes, and detector configurati
 ```python notest
 import jax
 import jax.numpy as jnp
+from hwoutils.precision import enable_x64
 
 from coronachrome import (
+    IFSRenderer,
     amplitude_basis,
+    build_ir,
     extraction_weights,
     marginal_covariance,
     spatial_sample,
     unmodeled_covariance,
 )
+
+enable_x64()
+# Construct the disperser, bands and focal-plane grid in this precision.
+ir = build_ir(disperser, bands, fp_grid)
+renderer = IFSRenderer(ir)
 
 # planet_template: Image on ir.fp_grid, unit sum per band plane.
 # speckle_modes:   (n_modes, n_bands, ny, nx) from a speckle generator.
@@ -142,9 +150,15 @@ array formed is `(n_basis, n_channels * n_bands)` rather than one of
 `(n_detector_pixels, n_basis)`. The remaining linear algebra is on matrices of
 the size of the basis, which is tens to hundreds of columns.
 
-Forming the Fisher matrix squares the conditioning of $H$, exactly as
-{func}`~coronachrome.spectrum_covariance` does, so run these under `x64` by
-setting the global `jax_enable_x64` flag.
+Forming the Fisher matrix squares the condition number of the weighted
+detector basis. {func}`~coronachrome.marginal_covariance`,
+{func}`~coronachrome.unmodeled_covariance`,
+{func}`~coronachrome.spectrum_covariance` and
+{func}`~coronachrome.spectrum_errorbars` require x64 and a float64 dispersion
+operator. Call `hwoutils.precision.enable_x64()` before constructing the
+renderer and its inputs, as in the example above. In an x64-enabled process
+you can also supply an existing float64 renderer. These APIs raise
+`hwoutils.precision.PrecisionError` for a float32 renderer or a float32 process.
 
 ## Choosing the nuisance basis
 

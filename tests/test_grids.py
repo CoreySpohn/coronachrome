@@ -2,7 +2,10 @@
 
 import ineedvalidation as vv
 import jax.numpy as jnp
+import numpy as np
 import pytest
+from hwoutils.numerics import sum_roundoff
+from hwoutils.testing import ulps
 
 from coronachrome.grids import LensletLayout, hex_grid, square_grid
 
@@ -26,20 +29,29 @@ def test_square_grid_integer_steps():
 @pytest.mark.parametrize("n", [2, 3])
 @vv.case("ifs-geometry", "code-verification")
 def test_hex_grid_count(n):
-    """Primitive staggered centres, 4 ulp floating-point floor."""
+    """Five operations at the uncentered lattice extent bound each coordinate.
+
+    Centering, staggering, the hex row height, and axial packing each use
+    at most five scalar operations along a coordinate's computation path.
+    """
     raw = [
         (col + (row % 2) / 2, row * 3**0.5 / 2) for row in range(n) for col in range(n)
     ]
     mean_x = sum(x for x, _ in raw) / n**2
     mean_y = sum(y for _, y in raw) / n**2
-    expected = jnp.array([(x - mean_x, y - mean_y) for x, y in raw])
-    assert jnp.allclose(hex_grid(n), expected, rtol=0, atol=5e-16)
+    expected = np.array([(x - mean_x, y - mean_y) for x, y in raw])
+    layout = hex_grid(n)
+    tol = float(ulps(5, layout.dtype.type(n - 1)))
+    np.testing.assert_allclose(layout, expected, rtol=0, atol=tol)
     grid, indices = LensletLayout(n, "hex").image_geometry(1.0, 0.0, None)
     coords = grid.coordinates()
     packed = jnp.stack([coords.x.ravel()[indices], coords.y.ravel()[indices]], axis=1)
-    assert jnp.allclose(packed, expected, rtol=0, atol=5e-16)
+    np.testing.assert_allclose(packed, expected, rtol=0, atol=tol)
 
 
 def test_hex_rows_offset_by_half():
-    """Fails if geometric centring ignores row staggering; FP floor, zero centroid."""
-    assert jnp.allclose(hex_grid(4).mean(axis=0), 0, atol=2e-16, rtol=0)
+    """Zero centroid allows four layout ops, a mean divide and pairwise sum."""
+    layout = hex_grid(4)
+    scale = jnp.max(jnp.abs(layout))
+    tol = ulps(5, scale) + sum_roundoff(scale, layout.shape[0])
+    np.testing.assert_allclose(layout.mean(axis=0), 0, atol=float(tol), rtol=0)

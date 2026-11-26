@@ -18,10 +18,14 @@ matrix of those basis functions, with the nuisance block marginalized. See
 import jax
 import jax.numpy as jnp
 import lineax as lx
+from hwoutils.numerics import COARSEST
+from hwoutils.precision import require_float64
 from jax import eval_shape
 from optixstuff.grids import Image
 
 from coronachrome.render import spatial_sample
+
+_MIN_COLUMN_NORM = jnp.finfo(COARSEST).tiny ** 0.5
 
 
 def detector_statistics(renderer, detector, electron_rates, plan):
@@ -108,33 +112,49 @@ def matched_filter(renderer, detector):
     """Matched-filter lenslet Image, shape (n_bands, y, x).
 
     Returns ``(H^T y)`` normalized by the per-(channel, wavelength) column
-    sum-of-squares, which for this operator equals
-    ``(ir.det_vals ** 2).sum(axis=2)``. Fast and differentiable, but biased
-    by cross-talk between overlapping traces.
+    sum of squares. Columns below the minimum normal float32 squared norm
+    have zero output in both lanes. Fast and differentiable, but biased by
+    cross-talk between overlapping traces.
     """
-    num = renderer.channel_spectra(
-        renderer.adjoint(detector)
-    )  # (n_channels, n_bands) = (H^T y) reshaped
-    colnorm2 = (renderer.ir.det_vals**2).sum(axis=2)  # (n_channels, n_bands)
-    # Divide by the exact column norm however small it is (a deeply clipped edge
-    # column is real signal); only a column below the dtype's smallest normal
-    # number has no usable support and returns zero.
-    supported = _supported(colnorm2)
-    return renderer.channel_cube(
-        num / jnp.where(supported, colnorm2, 1.0), detector.quantity
-    )
+    values = renderer.ir.det_vals
+    scale = _column_scale(values)
+    scaled = values / scale[..., None]
+    power = (scaled**2).sum(axis=2)
+    supported = _supported(values)
+    y = renderer._detector_data(detector).ravel()
+    terms = scaled * y[renderer.ir.det_rows]
+    # Reserve room for every tap and one rounding bit in the sparse adjoint.
+    # Columns with faint signals retain the full exponent range.
+    headroom = jnp.finfo(terms.dtype).max / (2 * max(1, terms.shape[-1]))
+    peak = jnp.max(jnp.abs(terms), axis=2, initial=0)
+    divisor = jax.lax.stop_gradient(jnp.maximum(1.0, peak / headroom))
+    num = (terms / divisor[..., None]).sum(axis=2)
+    spectra = (
+        jnp.where(supported, num, 0.0)
+        / jnp.where(supported, power, 1.0)
+        / jnp.where(supported, scale, 1.0)
+    ) * divisor
+    return renderer.channel_cube(spectra, detector.quantity)
 
 
-def _supported(squared_norm):
-    """Whether a squared column norm is representable in its own dtype.
+def _column_scale(values):
+    """Largest tap magnitude per column, held fixed as it cancels algebraically."""
+    scale = jnp.max(jnp.abs(values), axis=2, initial=0)
+    return jax.lax.stop_gradient(jnp.where(scale > 0, scale, 1.0))
 
-    Args:
-        squared_norm: Squared norms of operator columns.
 
-    Returns:
-        Boolean array, False for columns whose norm underflows the dtype.
-    """
-    return squared_norm > jnp.finfo(squared_norm.dtype).tiny
+def _supported(values, weights=None):
+    """Decide support on the float32 grid, including the weighting arithmetic."""
+    taps = jnp.abs(values.astype(COARSEST))
+    if weights is not None:
+        w = weights.astype(COARSEST)
+        taps = jnp.where((taps == 0) | (w == 0), 0.0, taps * jnp.sqrt(w))
+    # One tap at the inclusive floor suffices. Saturation keeps the norm
+    # representable, and scaling preserves contributions below the floor.
+    taps = jnp.minimum(taps, _MIN_COLUMN_NORM)
+    scale = _column_scale(taps)
+    power = ((taps / scale[..., None]) ** 2).sum(axis=2)
+    return scale * jnp.sqrt(power) >= _MIN_COLUMN_NORM
 
 
 def _equilibration(renderer, weights):
@@ -153,13 +173,17 @@ def _equilibration(renderer, weights):
         w = jnp.ones(n_det, dtype=renderer.H_mono.data.dtype)
     else:
         w = jnp.asarray(_weight_data(renderer, weights)).reshape(-1)
-    # diag(H^T W H)_(ch,wav) = sum_k det_vals[ch,wav,k]^2 * w[det_rows[ch,wav,k]]
-    wdiag = (ir.det_vals**2 * w[ir.det_rows]).sum(axis=2).reshape(-1)  # (ncw,)
-    # Equilibrate by the exact column scale, however small; a column whose scale
-    # underflows has no support: d = 0 removes it from the solve.
-    supported = _supported(wdiag)
-    d = jnp.where(supported, 1.0 / jnp.sqrt(jnp.where(supported, wdiag, 1.0)), 0.0)
-    return w, d
+    tap_weights = w[ir.det_rows]
+    supported = _supported(ir.det_vals, tap_weights)
+    scale = _column_scale(ir.det_vals * jnp.sqrt(tap_weights))
+    scaled = ir.det_vals / scale[..., None]
+    # Weight the squared norm linearly so a zero-weight pixel has its
+    # finite derivative. The square root above only chooses a fixed scale.
+    power = (scaled * (tap_weights * scaled)).sum(axis=2)
+    # Form the weighted norm without squaring its potentially faint scale.
+    norm = scale * jnp.sqrt(jnp.where(supported, power, 1.0))
+    d = jnp.where(supported, 1.0 / jnp.where(supported, norm, 1.0), 0.0)
+    return w, d.reshape(-1)
 
 
 def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
@@ -173,8 +197,8 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     pass ``1 / N`` (N the per-pixel noise variance) for noise-weighted
     extraction. Returns a cell-integrated lenslet Image of shape (n_bands, y, x).
     Differentiable through the solve with numerically stable gradients.
-    A column whose squared norm underflows the dtype has no support: its
-    coefficient is zero (``matched_filter`` likewise returns zero for it).
+    A column with squared weighted norm below the minimum normal float32 value
+    has no support and its coefficient is zero.
 
     Precision and conditioning: the forward model and this solve run in the
     stack's native precision (float32 by default). A well-sampled extraction
@@ -184,8 +208,7 @@ def lstsq(renderer, detector, weights=None, damping=0.0, rtol=1e-6, atol=1e-6):
     near-singular and the float32 solve can break down (non-finite); recover by
     reducing the wavelength count, enabling x64 (the global ``jax_enable_x64``
     flag), or raising ``damping``. The covariance path
-    (:func:`spectrum_covariance`) squares the conditioning and in practice needs
-    x64.
+    (:func:`spectrum_covariance`) requires x64 and a float64 dispersion operator.
 
     Args:
         renderer: An ``IFSRenderer`` holding the dispersion operator.
@@ -245,8 +268,8 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     This is the Gauss-Markov / Cramer-Rao covariance; it captures intra-spectrum
     wavelength correlations from trace cross-talk, and its diagonal gives the
     per-wavelength error bars (see :func:`spectrum_errorbars`). A column with no
-    support (squared norm underflowing the dtype) has infinite variance and zero
-    covariance with the others.
+    support (squared weighted norm below the minimum normal float32 value) has
+    infinite variance and zero covariance with the others.
 
     Matrix-free: for each channel it runs ``n_bands`` symmetric-positive-definite
     CG solves against the same weight-equilibrated normal operator as
@@ -256,10 +279,8 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
     solver batches its whole while-loop into one program whose compile time and
     memory grow with the batch, so ``lax.map`` keeps compilation bounded.
 
-    Precision: this forms the (equilibrated) normal operator explicitly, which
-    squares the condition number, so the CG solves are markedly less
-    float32-stable than :func:`lstsq`. Run the covariance under x64 (the global
-    ``jax_enable_x64`` flag) for reliable results.
+    Precision: the normal operator squares the condition number. This operation
+    requires x64 and a float64 dispersion operator.
 
     Args:
         renderer: An ``IFSRenderer``.
@@ -276,7 +297,11 @@ def spectrum_covariance(renderer, weights=None, channels=None, rtol=1e-6, atol=1
 
     Returns:
         Covariance blocks of shape ``(len(channels), n_bands, n_bands)``.
+
+    Raises:
+        PrecisionError: x64 is unavailable or the dispersion operator is narrow.
     """
+    require_float64("spectrum_covariance", renderer.H_mono.data)
     ir = renderer.ir
     n_bands = ir.n_bands
     ncw = ir.n_channels * n_bands
@@ -432,9 +457,8 @@ def marginal_covariance(
     unmodeled always, since ``F_nn - F_ns F_ss^-1 F_sn`` is positive
     semidefinite.
 
-    Precision: this forms the basis Fisher matrix explicitly, squaring the
-    conditioning of ``H``, so run it under x64 (the global ``jax_enable_x64``
-    flag) as for :func:`spectrum_covariance`.
+    Precision: the basis Fisher matrix squares the conditioning of ``H``.
+    This operation requires x64 and a float64 dispersion operator.
 
     Args:
         renderer: An ``IFSRenderer`` holding the dispersion operator.
@@ -453,7 +477,11 @@ def marginal_covariance(
 
     Returns:
         Covariance of shape ``(n_science, n_science)``.
+
+    Raises:
+        PrecisionError: x64 is unavailable or the dispersion operator is narrow.
     """
+    require_float64("marginal_covariance", renderer.H_mono.data)
     if nuisance is None:
         return jnp.linalg.inv(_basis_fisher(renderer, jnp.asarray(science), weights))
     f_ss, f_sn, f_nn = _split_fisher(renderer, science, nuisance, weights)
@@ -489,7 +517,11 @@ def unmodeled_covariance(renderer, science, nuisance, weights=None, nuisance_cov
 
     Returns:
         Covariance of shape ``(n_science, n_science)``.
+
+    Raises:
+        PrecisionError: x64 is unavailable or the dispersion operator is narrow.
     """
+    require_float64("unmodeled_covariance", renderer.H_mono.data)
     f_ss, f_sn, _ = _split_fisher(renderer, science, nuisance, weights)
     prior_cov = _prior_covariance(nuisance_cov, f_ss.dtype)
     conditional = jnp.linalg.inv(f_ss)
@@ -504,7 +536,11 @@ def spectrum_errorbars(renderer, weights=None, channels=None, rtol=1e-6, atol=1e
     ``(len(channels), n_bands)``. With ``weights = 1 / N`` these scale with
     wavelength through the detector noise: the shot term of ``N`` is
     proportional to the dispersed source rate at each wavelength.
+
+    Raises:
+        PrecisionError: x64 is unavailable or the dispersion operator is narrow.
     """
+    require_float64("spectrum_errorbars", renderer.H_mono.data)
     cov = spectrum_covariance(
         renderer, weights=weights, channels=channels, rtol=rtol, atol=atol
     )
