@@ -11,7 +11,6 @@ import warnings
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import PixelGrid, footprint_overlap
 from optixstuff.psflet_pack import load_psflet_pack
@@ -73,26 +72,29 @@ def _resolve_psflet_pack(disperser, psflet_pack):
     )
 
 
-def _validate_pack_for_band(pack, lam, half):
+def _validate_pack_for_band(pack, bands, half):
     """Reject template extrapolation; warn when the footprint outruns the pack."""
     pack_nm = pack.wavelengths_nm.values
     lam_lo = float(pack_nm[0])
     lam_hi = float(pack_nm[-1])
+    band_lo = min(b.low_nm for b in bands)
+    band_hi = max(b.high_nm for b in bands)
     if pack_nm.size == 1:
         # A one-wavelength pack is a monochromatic template set: valid only for
         # a band whose edges are at its own wavelength.
-        edges = np.asarray(lam, dtype=np.float64)
-        if not np.all(same_wavelength(edges, lam_lo)):
+        if not (same_wavelength(band_lo, lam_lo) and same_wavelength(band_hi, lam_lo)):
             raise ValueError(
                 f"the pack is tabulated at one wavelength, {lam_lo:.6g} nm, so "
                 "it is monochromatic; the requested band "
-                f"[{float(edges.min()):.6g}, {float(edges.max()):.6g}] nm is "
+                f"[{band_lo:.6g}, {band_hi:.6g}] nm is "
                 "not at that wavelength. Use a pack with several wavelengths "
                 "for a wider band"
             )
-    elif float(lam.min()) < lam_lo or float(lam.max()) > lam_hi:
+    elif (band_lo < lam_lo and not same_wavelength(band_lo, lam_lo)) or (
+        band_hi > lam_hi and not same_wavelength(band_hi, lam_hi)
+    ):
         raise ValueError(
-            f"requested band [{float(lam.min()):.6g}, {float(lam.max()):.6g}] nm "
+            f"requested band [{band_lo:.6g}, {band_hi:.6g}] nm "
             f"extends beyond the pack's tabulated range [{lam_lo:.6g}, "
             f"{lam_hi:.6g}] nm; template extrapolation is not supported"
         )
@@ -292,11 +294,7 @@ def _(
     models = [disperser.throughput_element]
     if disperser.psflet_kind == "template":
         pack = _resolve_psflet_pack(disperser, psflet_pack)
-        _validate_pack_for_band(
-            pack,
-            jnp.asarray([b.low_nm for b in bands] + [b.high_nm for b in bands]),
-            half,
-        )
+        _validate_pack_for_band(pack, bands, half)
         models.append(pack)
     quadrature = Quadrature.build(bands, *models, order=quadrature_order)
     lenslet_grid, lenslet_indices = layout.image_geometry(

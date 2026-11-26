@@ -4,6 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
+from hwoutils.numerics import sum_roundoff
+from hwoutils.testing import ulps
 from optixstuff import AbstractUniformElement
 from optixstuff.disperser import LensletDisperser
 from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack, save_psflet_pack
@@ -51,6 +53,9 @@ def test_build_splits_at_template_and_throughput_breaks():
     In normalized band coordinates x = (lambda - 600) / 100, the red rolloff
     removes integral(4/3 * (1-x) * (2*x-1), x=.5..1) = 1/18 from the
     triangle area 1/2. The two nonzero pixels sum to the mean throughput 3/4.
+    The wavelength cast contributes one rounding at 700 nm times the sum
+    of the template and throughput slope bounds. Add two six-node sums and
+    twelve operations for interpolation, footprint normalization and weighting.
     """
 
     class Filter(AbstractUniformElement):
@@ -85,7 +90,12 @@ def test_build_splits_at_template_and_throughput_breaks():
     )
     expected = np.zeros(9)
     expected[4:6] = [11 / 36, 4 / 9]
-    np.testing.assert_allclose(ir.det_vals[0, 0], expected, rtol=0, atol=2e-15)
+    one = jnp.ones((), dtype=ir.det_vals.dtype)
+    tol = ulps(1, 700 * one) * (1 / 25 + 1 / 50)
+    tol += 2 * sum_roundoff(one, 6) + ulps(12, one)
+    actual = ir.det_vals[0, 0]
+    np.testing.assert_array_equal(actual[expected == 0], 0)
+    np.testing.assert_allclose(actual, expected, rtol=0, atol=float(tol))
 
 
 def test_template_mode_parity_with_gaussian():
@@ -152,6 +162,24 @@ def test_band_outside_pack_raises():
             fp_grid=sky_grid((32, 32), 0.2 / (2.0)),
             bands=bands_at(jnp.array([700.0])),
         )
+
+
+@pytest.mark.parametrize("edge_dtype", [np.float64, np.float32])
+def test_band_accepts_its_own_decimal_pack_edges(edge_dtype):
+    """Fails if pack metadata narrows or its own decimal band edges are refused."""
+    edges = [600.3, 700.2]
+    pack = analytic_psflet_pack(
+        "gaussian", jnp.array([0.7]), edges, half_extent=1, step=0.5
+    )
+    np.testing.assert_array_equal(pack.wavelengths_nm.values, edges)
+    ir = build_ir(
+        _disp(1, psflet_kind="template", dispersion_coeffs=jnp.zeros(1)),
+        (Band(*np.asarray(edges, dtype=edge_dtype)),),
+        sky_grid((16, 16)),
+        psflet_pack=pack,
+        half=1,
+    )
+    assert ir.n_bands == 1
 
 
 def test_template_weights_interpolate_between_planes():

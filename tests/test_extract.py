@@ -7,6 +7,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, sky_grid
+from hwoutils.numerics import COARSEST, sum_roundoff
+from hwoutils.precision import PrecisionError
+from hwoutils.testing import precision_pair, ulps
 from optixstuff.detector import Detector
 from optixstuff.disperser import LensletDisperser
 from optixstuff.exposure import FramePlan
@@ -235,6 +238,20 @@ def test_spectrum_covariance_many_channels_matches_dense():
         assert np.allclose(cov[i], ref, rtol=1e-3, atol=1e-8)
 
 
+@pytest.mark.parametrize("entry", [spectrum_covariance, spectrum_errorbars])
+def test_extraction_uncertainty_refuses_float32(entry, precision):
+    """A float32 dispersion operator is refused even when x64 is enabled."""
+    renderer, _ = _renderer(n=1, n_bands=1)
+    renderer = IFSRenderer(
+        eqx.tree_at(
+            lambda ir: ir.det_vals, renderer.ir, renderer.ir.det_vals.astype(COARSEST)
+        )
+    )
+    remedy = "canonical" if precision == np.float64 else "enable_x64"
+    with pytest.raises(PrecisionError, match=rf"{entry.__name__}.*{remedy}"):
+        entry(renderer, channels=[0])
+
+
 @pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
 def test_spectrum_errorbars_is_sqrt_diag():
     """Error bars equal sqrt of the covariance block diagonal."""
@@ -415,57 +432,162 @@ def test_detector_statistics_sums_variance_components(detector_setup):
 
 def _edge_renderer(xc, half, sigma=0.7):
     """One lenslet at 700 nm whose Gaussian PSFlet is centered at detector x = xc."""
-
-    def disperser(coeff):
-        return LensletDisperser(
-            pitch_m=174e-6,
-            sky_pitch_arcsec=0.2,
-            pixsize_m=13e-6,
-            angle_rad=0.0,
-            lam_ref_nm=660.0,
-            pix_per_reselt=2.0,
-            dispersion_coeffs=jnp.array([coeff, 0.0]),
-            psflet_params=jnp.array([sigma]),
-            psflet_ref_nm=660.0,
-            grid_kind="square",
-            n_lenslets=1,
-            psflet_kind="gaussian",
-            detector_shape=(32, 32),
-        )
-
-    # The trace is linear in the first coefficient: measure its slope, then solve.
-    lam = jnp.array([700.0])
-    base = float(detector_centroids(disperser(0.0), lam)[0][0, 0])
-    slope = float(detector_centroids(disperser(1.0), lam)[0][0, 0]) - base
-    disp = disperser((xc - base) / slope)
-    assert float(detector_centroids(disp, lam)[0][0, 0]) == pytest.approx(xc)
+    shape = (32, 32)
+    offset = xc - (shape[1] - 1) / 2
+    disp = LensletDisperser(
+        pitch_m=174e-6,
+        sky_pitch_arcsec=0.2,
+        pixsize_m=13e-6,
+        angle_rad=0.0,
+        lam_ref_nm=660.0,
+        pix_per_reselt=2.0,
+        dispersion_coeffs=jnp.array([offset]),
+        psflet_params=jnp.array([sigma]),
+        psflet_ref_nm=660.0,
+        grid_kind="square",
+        n_lenslets=1,
+        psflet_kind="gaussian",
+        detector_shape=shape,
+    )
+    lam = [700.0]
+    assert float(detector_centroids(disp, lam)[0][0, 0]) == xc
     ir = build_ir(disp, fp_grid=sky_grid((2, 2), 0.1), bands=bands_at(lam), half=half)
     return IFSRenderer(ir)
 
 
 def test_matched_filter_recovers_flux_of_a_deeply_clipped_edge_column():
-    """A column with only its far tail on the detector still returns the flux."""
+    """Recover the input flux from a clipped tail in both lanes.
+
+    The reference is 10 electrons. Allow two stamp reductions and six scalar
+    roundings for normalization, products and divisions.
+    """
     r = _edge_renderer(-4.0, half=6)
     column = float((r.ir.det_vals**2).sum())
     assert 0 < column < 1e-12  # below the former absolute floor
     detector = (r.H_mono @ jnp.array([10.0])).reshape(r.ir.det_shape)
     cube = matched_filter(r, r.detector_image(detector, "e"))
-    np.testing.assert_allclose(r.channel_spectra(cube), 10.0, rtol=1e-9)
+    spectra = r.channel_spectra(cube)
+    expected = spectra.dtype.type(10)
+    tol = 2 * sum_roundoff(expected, r.ir.det_vals.shape[-1]) + ulps(6, expected)
+    np.testing.assert_allclose(spectra, 10.0, rtol=0, atol=float(tol))
 
 
-@pytest.mark.float64_only(reason="the squared 1e-23 weight underflows in float32")
-def test_lstsq_and_covariance_are_finite_for_a_faint_surviving_weight():
-    """A column whose surviving weight is 1e-23 is solved exactly, not floored."""
-    r = _edge_renderer(-1.0, half=1)
-    faint = r.ir.det_vals * (1e-23 / r.ir.det_vals.max())
-    r = IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, r.ir, faint))
-    detector = (r.H_mono @ jnp.array([10.0])).reshape(r.ir.det_shape)
-    z_hat = r.channel_spectra(lstsq(r, r.detector_image(detector, "e")))
-    np.testing.assert_allclose(z_hat, 10.0, rtol=1e-6)
+def _sparse_column_renderer(renderer, weight, n_taps=1):
+    vals = jnp.zeros_like(renderer.ir.det_vals, dtype=jnp.asarray(weight).dtype)
+    vals = vals.at[0, 0, :n_taps].set(weight)
+    return IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, renderer.ir, vals))
+
+
+@pytest.mark.parametrize("signal", [1e-10, 1e-30])
+def test_matched_filter_faint_column_derivative(signal):
+    """Fails if the faint-column quotient or its derivative underflows.
+
+    The float64 analytic y/a and -y/a**2 allow eight rounding operations:
+    two casts and six scalar operations for scaling and differentiating. In
+    the float64 process the same relative bound also checks the precision pair.
+    """
+    renderer, _ = _renderer(n=1, n_bands=1)
+    weight = 1e-10
+
+    def estimate(a, y):
+        r = _sparse_column_renderer(renderer, a)
+        detector = r.detector_image(jnp.broadcast_to(y, r.ir.det_shape), "e")
+        return matched_filter(r, detector).data[0, 0, 0]
+
+    evaluate = jax.jit(jax.value_and_grad(estimate))
+    inputs = (jnp.asarray(weight), jnp.asarray(signal))
+    actual = jnp.asarray(evaluate(*inputs))
+    expected = np.array([signal / weight, -signal / weight**2])
+    tol = ulps(8, jnp.asarray(expected, dtype=actual.dtype))
+    np.testing.assert_array_equal(
+        np.abs(np.asarray(actual) - expected) <= np.asarray(tol), True
+    )
+    if actual.dtype == np.float64:
+        precision_pair(evaluate, inputs, bound=float(ulps(8, np.float32(1))), scale=0)
+
+
+_FLOOR = float(np.sqrt(np.finfo(COARSEST).tiny))
+
+
+@pytest.mark.parametrize(
+    ("tap", "n_taps", "inv_variance", "supported"),
+    [
+        (1e-20, 1, None, False),
+        (_FLOOR, 1, None, True),
+        (_FLOOR / 2, 4, None, True),
+        (8.852473344610577e-20, 1, 1.5, True),
+        (7.666466952210875e-20, 1, 2.0, False),
+    ],
+)
+def test_extraction_support_at_float32_floor(tap, n_taps, inv_variance, supported):
+    """Support includes equality after float32 weighting in either lane.
+
+    Equal taps give 1/tap within one cast and one division for matched
+    filtering, or eight roundings for equilibration and the scalar solve.
+    """
+    renderer, _ = _renderer(n=1, n_bands=1)
+    renderer = _sparse_column_renderer(renderer, tap, n_taps)
+    detector = renderer.detector_image(jnp.ones(renderer.ir.det_shape), "e")
+    weights = (
+        None if inv_variance is None else jnp.full(renderer.ir.det_shape, inv_variance)
+    )
+    expected = 1 / tap if supported else 0.0
+    for solve in (lstsq, eqx.filter_jit(lstsq)):
+        flux = solve(renderer, detector, weights).data.item()
+        assert abs(flux - expected) <= ulps(8, detector.data.dtype.type(expected))
+    if weights is None:
+        for extract in (matched_filter, eqx.filter_jit(matched_filter)):
+            flux = extract(renderer, detector).data.item()
+            assert abs(flux - expected) <= ulps(2, detector.data.dtype.type(expected))
+
+
+@pytest.mark.parametrize("signal", [1e38, float(np.finfo(COARSEST).tiny)])
+def test_matched_filter_four_half_strength_taps(signal):
+    """Four half-strength taps recover twice the stored signal in either lane.
+
+    The tap normalization and final factor of two are exact. Allow three
+    additions, one division by the accumulation scale and one rescaling.
+    """
+    renderer, _ = _renderer(n=1, n_bands=1)
+    renderer = _sparse_column_renderer(renderer, 0.5, 4)
+    detector = renderer.detector_image(jnp.full(renderer.ir.det_shape, signal), "e")
+    expected = 2 * detector.data[0, 0]
+    for extract in (matched_filter, eqx.filter_jit(matched_filter)):
+        flux = extract(renderer, detector).data.item()
+        assert abs(flux - float(expected)) <= ulps(5, expected)
+
+
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
+def test_covariance_derivative_at_zero_pixel_weight():
+    """Two distinct quarter-strength taps give variance 16/(1+w).
+
+    At zero weight the scalar solve and its derivative use exact dyadic values.
+    """
+    renderer, _ = _renderer(n=1, n_bands=1)
+    renderer = _sparse_column_renderer(renderer, 0.25, 2)
+    first, second = renderer.ir.det_rows[0, 0, :2]
+    assert first != second
+
+    def variance(w):
+        weights = jnp.ones(renderer.H_mono.shape[0]).at[first].set(w)
+        return spectrum_covariance(renderer, weights, channels=[0])[0, 0, 0]
+
+    evaluate = jax.value_and_grad(variance)
+    for run in (evaluate, jax.jit(evaluate)):
+        np.testing.assert_array_equal(run(jnp.asarray(0.0)), [16.0, -16.0])
+
+
+@pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
+def test_covariance_is_finite_for_a_faint_supported_weight():
+    """One faint supported coefficient has variance 1/a**2 within eight ops."""
+    r, _ = _renderer(n=1, n_bands=1)
+    weight = np.float64(1e-18)
+    r = _sparse_column_renderer(r, weight)
     variance = spectrum_covariance(r, channels=[0])
-    expected = 1.0 / float((faint**2).sum())
-    assert np.all(np.isfinite(variance))
-    np.testing.assert_allclose(variance[0, 0, 0], expected, rtol=1e-6)
+    expected = 1 / weight**2
+    np.testing.assert_allclose(
+        variance[0, 0, 0], expected, rtol=0, atol=float(ulps(8, expected))
+    )
 
 
 def test_a_column_with_no_support_is_removed_not_nan():
@@ -479,10 +601,10 @@ def test_a_column_with_no_support_is_removed_not_nan():
 
 
 @pytest.mark.float64_only(reason="GLS spectrum covariance requires float64")
-def test_covariance_of_column_with_no_support_is_infinite():
-    """Fails if a column with no support has finite or NaN variance."""
-    r = _edge_renderer(-1.0, half=1)
-    dead = jnp.zeros_like(r.ir.det_vals)
-    r = IFSRenderer(eqx.tree_at(lambda ir: ir.det_vals, r.ir, dead))
+@pytest.mark.parametrize("weight", [0.0, 1e-20])
+def test_covariance_of_column_with_no_support_is_infinite(weight):
+    """Fails if a dead or below-floor column has finite or NaN variance."""
+    r, _ = _renderer(n=1, n_bands=1)
+    r = _sparse_column_renderer(r, weight)
     cov = spectrum_covariance(r, channels=[0])
     assert np.isinf(cov[0, 0, 0]) and not np.any(np.isnan(cov))

@@ -7,6 +7,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid
+from hwoutils.numerics import sum_roundoff
+from hwoutils.testing import ulps
 from optixstuff import TransmissiveElement
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import Frame, Measure, PixelGrid, SkyOrientation
@@ -94,9 +96,26 @@ def test_build_ir_returns_ir_with_expected_shapes():
     assert ir.detector_grid.unit == "meter"
 
 
+def _footprint_sum_roundoff(ir, expected):
+    """Budget two stamp sums, two five-node sums, and five scalar roundings."""
+    unit = jnp.asarray(expected, dtype=ir.det_vals.dtype)
+    return float(
+        2 * sum_roundoff(unit, ir.det_vals.shape[-1])
+        + 2 * sum_roundoff(unit, 5)
+        + ulps(5, unit)
+    )
+
+
 def test_det_vals_normalized_per_channel_wavelength():
-    """Fails if bin normalization changes integrated flux; floating-point floor."""
-    assert jnp.allclose(_build().det_vals.sum(axis=2), 1, atol=2e-15, rtol=0)
+    """Unit flux within two stamp sums, two node sums, and five roundings.
+
+    Scalar operations are profile division, weight storage, throughput and
+    quadrature products, and division by the integrated band width.
+    """
+    ir = _build()
+    np.testing.assert_allclose(
+        ir.det_vals.sum(axis=2), 1, atol=_footprint_sum_roundoff(ir, 1), rtol=0
+    )
 
 
 def test_indices_in_bounds():
@@ -113,9 +132,11 @@ def test_unregistered_type_raises():
 
 
 def test_moffat_psflet_build_normalizes():
-    """Fails if Moffat quadrature loses bin flux; floating-point floor."""
+    """Moffat unit flux allows two stamp sums, two node sums, and five roundings."""
     ir = _build(_disp(psflet_kind="moffat", psflet_params=jnp.array([1.5, 2.5])))
-    assert jnp.allclose(ir.det_vals.sum(axis=2), 1, atol=2e-15, rtol=0)
+    np.testing.assert_allclose(
+        ir.det_vals.sum(axis=2), 1, atol=_footprint_sum_roundoff(ir, 1), rtol=0
+    )
 
 
 def test_off_detector_footprints_warn():
@@ -172,7 +193,7 @@ def test_wavelength_edges_control_lsf_smear():
 
 
 def test_wavelength_edges_match_gradient_on_uniform_grid():
-    """Fails if spectral integration aliases: constant throughput integrates exactly."""
+    """Constant throughput allows its cast, two stamp and node sums, and five ops."""
     from optixstuff import ConstantThroughput
 
     ir = build_ir(
@@ -181,7 +202,8 @@ def test_wavelength_edges_match_gradient_on_uniform_grid():
         sky_grid((16, 16)),
         half=12,
     )
-    assert jnp.allclose(ir.det_vals.sum(), 0.3, atol=2e-16, rtol=0)
+    tol = _footprint_sum_roundoff(ir, 0.3) + float(ulps(1, ir.det_vals.dtype.type(0.3)))
+    np.testing.assert_allclose(ir.det_vals.sum(), 0.3, atol=tol, rtol=0)
 
 
 def test_wavelength_edges_shape_validated():
@@ -270,19 +292,35 @@ def test_throughput_scales_footprint_sums():
 
 
 def test_build_ir_spatial_footprint_is_flux_conserving():
-    """Fails if an angular footprint treats per-steradian data as per arcsec squared."""
+    """Anchor the per-steradian conversion to float64 geometry.
+
+    The cell allows nine overlapping pixel contributions plus six roundings
+    for weight storage, products and angle/area conversion. The detector total
+    adds PSFlet normalization, one product, one contribution per channel-band
+    per detector pixel, and the detector reduction depth.
+    """
     ir = _build()
     image = focal_image(
         jnp.full((3, 32, 32), 100.0), ir.fp_grid, measure=Measure.density("sr")
     )
     # One arcsecond spans pi / 648000 radians. Each lenslet is 0.2" square.
-    sr_per_arcsec2 = (jnp.pi / 648000.0) ** 2
+    sr_per_arcsec2 = (np.pi / 648000.0) ** 2
     z = spatial_sample(image, ir)
-    assert jnp.allclose(z, 4 * sr_per_arcsec2, rtol=7e-15, atol=0)
+    unit = jnp.ones((), dtype=z.dtype)
+    cell_rtol = float(ulps(9 + 6, unit))
+    np.testing.assert_allclose(z, 4 * sr_per_arcsec2, rtol=cell_rtol, atol=0)
     renderer = IFSRenderer(ir)
     detector = renderer.forward_spmv(image)
     assert detector.quantity == "e/s" and detector.measure == Measure.integral()
-    assert jnp.allclose(detector.data.sum(), 432 * sr_per_arcsec2, rtol=3e-15, atol=0)
+    detector_rtol = (
+        cell_rtol
+        + _footprint_sum_roundoff(ir, 1)
+        + float(ulps(1 + ir.n_channels * ir.n_bands, unit))
+        + float(sum_roundoff(unit, detector.data.size))
+    )
+    np.testing.assert_allclose(
+        detector.data.sum(), 432 * sr_per_arcsec2, rtol=detector_rtol, atol=0
+    )
     # lambda/D cannot cross the seam without an explicit Frame conversion.
     lod = PixelGrid.focal(32, 0.1, Frame(660, 6, "inscribed"))
     with pytest.raises(ValueError, match="Frame"):
@@ -303,7 +341,12 @@ def test_gaussian_detector_edge(offset, fraction):
 
 
 def test_uniform_array_clipped_flux():
-    """Two of four lenslets straddle the edge, leaving three lenslets of flux."""
+    """Two of four lenslets straddle the edge, leaving three lenslets of flux.
+
+    Relative roundoff covers stamp and detector sums, four lenslet deposits
+    per pixel, and up to nine cell-overlap terms with four scalar roundings.
+    The analytic half-flux check also includes PSFlet normalization.
+    """
     disp = _disp(
         2,
         pitch_m=8 * 13e-6,
@@ -315,5 +358,14 @@ def test_uniform_array_clipped_flux():
     counts = IFSRenderer(ir).forward_spmv(image).data.sum()
     flux_per_lenslet = 4.0  # Each square cell covers four unit-flux focal pixels.
     expected = (ir.det_vals.sum(axis=-1) * flux_per_lenslet).sum()
-    np.testing.assert_allclose(counts, expected, rtol=1e-12, atol=0)
-    np.testing.assert_allclose(counts, 3 * flux_per_lenslet, rtol=1e-12, atol=0)
+    unit = jnp.ones((), dtype=counts.dtype)
+    tol = float(
+        sum_roundoff(unit, np.prod(ir.det_shape))
+        + sum_roundoff(unit, ir.det_vals.shape[-1])
+        + sum_roundoff(unit, ir.n_channels)
+        + ulps(ir.n_channels + 9 + 4, unit)
+    )
+    np.testing.assert_allclose(counts, expected, rtol=tol, atol=0)
+    np.testing.assert_allclose(
+        counts, 3 * flux_per_lenslet, rtol=tol + _footprint_sum_roundoff(ir, 1), atol=0
+    )

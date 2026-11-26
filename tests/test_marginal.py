@@ -1,10 +1,13 @@
 """Tests for the nuisance-marginal measurement covariance."""
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid
+from hwoutils.numerics import COARSEST
+from hwoutils.precision import PrecisionError
 from optixstuff.disperser import LensletDisperser
 
 from coronachrome.build import build_ir
@@ -14,6 +17,21 @@ from coronachrome.extract import (
     unmodeled_covariance,
 )
 from coronachrome.render import IFSRenderer, spatial_sample
+
+
+@pytest.mark.parametrize("entry", [marginal_covariance, unmodeled_covariance])
+def test_nuisance_covariance_refuses_float32(entry, precision):
+    """Nuisance covariance requires x64 and a float64 dispersion operator."""
+    renderer, _ = _renderer(n=1, n_bands=1)
+    basis = jnp.ones((1, 1, 1))
+    renderer = IFSRenderer(
+        eqx.tree_at(
+            lambda ir: ir.det_vals, renderer.ir, renderer.ir.det_vals.astype(COARSEST)
+        )
+    )
+    remedy = "canonical" if precision == np.float64 else "enable_x64"
+    with pytest.raises(PrecisionError, match=rf"{entry.__name__}.*{remedy}"):
+        entry(renderer, basis, basis, nuisance_cov=jnp.ones(1))
 
 
 def _renderer(n=4, n_bands=5, fp=(32, 32)):
