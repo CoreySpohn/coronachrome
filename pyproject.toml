@@ -79,6 +79,7 @@ convention = "google"
 [tool.pytest.ini_options]
 addopts = "-p hwoutils.testing.precision"
 default_precision = "float32"
+precision_guard_enforce = true
 filterwarnings = [
     "error",
     # tol_colors builds colormaps with set_bad, pending deprecation in Matplotlib 3.11.
