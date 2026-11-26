@@ -1,5 +1,6 @@
 """Build-time Band, grid and layout contracts."""
 
+import re
 from contextlib import nullcontext
 
 import equinox as eqx
@@ -7,15 +8,22 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from conftest import bands_at, focal_image, sky_grid
+from hwoutils.leaves import canonical
 from hwoutils.numerics import sum_roundoff
-from hwoutils.testing import ulps
+from hwoutils.testing import assert_precision_closed, precision_pair, ulps
 from optixstuff import TransmissiveElement
 from optixstuff.disperser import LensletDisperser
 from optixstuff.grids import Frame, Measure, PixelGrid, SkyOrientation
-from optixstuff.spectral import Band, Transmission
+from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack
+from optixstuff.spectral import Band, Quadrature, Transmission
 
-from coronachrome import IFSRenderer, build_ir, spatial_sample
-from coronachrome.build import lenslet_cell_centers
+from coronachrome import IFSRenderer, LensletLayout, build_ir, spatial_sample
+from coronachrome.build import (
+    _band_response,
+    detector_centroids,
+    lenslet_cell_centers,
+    lenslet_positions,
+)
 
 
 def _disp(n=6, **overrides):
@@ -42,6 +50,221 @@ def _build(d=None, **kw):
     return build_ir(
         _disp() if d is None else d, bands_at([640, 660, 680]), sky_grid((32, 32)), **kw
     )
+
+
+@pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
+@pytest.mark.parametrize("grid_kind", ["square", "hex"])
+@pytest.mark.parametrize("entry", ["lenslet_positions", "lenslet_cell_centers"])
+def test_lenslet_geometry_precision_closure(grid_kind, entry):
+    """Allow 16 rounding units for stagger, rotation and pixel conversion.
+
+    The grid is axis-aligned with a 2:1 pitch ratio. The hex stagger adds
+    one square root and a multiply. For the focal centers allow one sine
+    and cosine, two products and a sum for rotation, scaling and the grid
+    inversion, all at the peak coordinate scale.
+    """
+    args = (_disp(2, grid_kind=grid_kind, angle_rad=0.25),)
+    grid = sky_grid((6, 6))
+
+    def evaluate(model):
+        if entry == "lenslet_positions":
+            return lenslet_positions(model)
+        return lenslet_cell_centers(model, grid)
+
+    assert_precision_closed(evaluate, *canonical(args, precision="float32"))
+    precision_pair(evaluate, args, bound=float(ulps(16, np.float32(1))))
+
+
+@pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
+def test_band_response_precision_closure():
+    """Allow 24 rounding units for the normalized band-constant response.
+
+    The two bands have six and three active nodes, respectively. Allow
+    six units for three positive footprint weights and their normalization,
+    six for throughput and Gauss weights, and twelve for two six-term sums
+    and the final division. One tap in each footprint is off the detector.
+    """
+    bands = (Band(650, 660), Band(660, 670))
+    rule = Quadrature.build(bands, breaks_nm=(656.0,), order=3)
+    profiles = jnp.linspace(0.25, 1.0, 36).reshape(1, 2, 6, 3)
+    valid = jnp.array([[[True, False, True], [False, True, True]]])
+    throughput = jnp.linspace(0.5, 1.0, 12).reshape(2, 6)
+
+    args = (rule, profiles, valid, throughput)
+    assert_precision_closed(_band_response, *canonical(args, precision="float32"))
+    precision_pair(_band_response, args, bound=float(ulps(24, np.float32(1))))
+
+
+@pytest.mark.float64_only(reason="build a float32 IR inside the x64 lane")
+def test_ir_build_preserves_model_precision():
+    """Store narrow operator leaves and retain central-footprint agreement.
+
+    On this one-lenslet, three-node fixture the trace stays within one
+    central detector pixel. Allow eight units for wavelength-to-centroid
+    and width scaling, 32 for the erf profile and 24 for normalizing nine
+    taps and averaging them over the band, at the peak tap value.
+    """
+    model = _disp(
+        1,
+        angle_rad=0.25,
+        detector_shape=(9, 9),
+        dispersion_coeffs=jnp.array([10.0, 0.0]),
+    )
+    bands = (Band(650, 670),)
+    grid = sky_grid((4, 4))
+
+    def build(model):
+        return build_ir(model, bands, grid, half=1, quadrature_order=3)
+
+    narrow = build(canonical(model, precision="float32"))
+    wide = build(model)
+    assert narrow.det_vals.dtype == np.float32
+    assert narrow.collection_overlap.sparse[2].dtype == np.float32
+    np.testing.assert_array_equal(narrow.det_rows, wide.det_rows)
+    precision_pair(
+        lambda model: build(model).det_vals,
+        (model,),
+        bound=float(ulps(64, np.float32(1))),
+    )
+
+
+def test_ir_build_keeps_nodes_below_filter_support_dark():
+    """Both bands have exact integrated responses because the filter is flat.
+
+    Every Gauss node in the first band is below 650 nm, even the highest
+    node, which rounds to 650 nm in float32. All nodes in the second band
+    have unit transmission. Allow 16 units for normalizing and summing taps.
+    """
+    model = canonical(
+        _disp(
+            1,
+            detector_shape=(9, 9),
+            throughput_element=TransmissiveElement(
+                Transmission([650.0, 660.0], [1.0, 1.0])
+            ),
+        ),
+        precision="float32",
+    )
+    bands = (Band(649.9992, 650.0), Band(650.0, 650.0008))
+    ir = build_ir(model, bands, sky_grid((5, 5)), half=1, quadrature_order=6)
+    assert ir.det_vals.dtype == np.float32
+    np.testing.assert_array_equal(ir.det_vals[0, 0], 0)
+    np.testing.assert_allclose(
+        ir.det_vals[0, 1].sum(), 1, rtol=0, atol=float(ulps(16, np.float32(1)))
+    )
+
+
+@pytest.mark.parametrize("above_tie", [False, True])
+def test_ir_build_rounds_host_centroid(above_tie):
+    """Round 4.5 to even, but move one column at the next float32 shift.
+
+    The 9x9 detector is centered at 4. A half-width of one includes three
+    columns centered at 4 or 5 depending on the exact host sum.
+    """
+    shift = np.float32(0.5)
+    if above_tie:
+        shift = np.nextafter(shift, np.float32(1))
+    model = canonical(
+        _disp(1, detector_shape=(9, 9), dispersion_coeffs=jnp.array([shift])),
+        precision="float32",
+    )
+    ir = build_ir(model, (Band(659, 661),), sky_grid((5, 5)), half=1)
+    cols = np.arange(3, 6) + above_tie
+    np.testing.assert_array_equal(ir.det_rows[0, 0] % 9, np.tile(cols, 3))
+
+
+def test_ir_build_accepts_legacy_layout_override():
+    """A custom quarter-lenslet shift places the middle tap one pixel right."""
+
+    class CustomLayout(LensletLayout):
+        def positions(self):
+            return super().positions() + jnp.array([[0.25, 0.0]])
+
+    model = _disp(
+        1, pitch_m=52e-6, detector_shape=(9, 9), dispersion_coeffs=jnp.zeros(1)
+    )
+    layout = CustomLayout(1)
+    np.testing.assert_array_equal(
+        lenslet_positions(model, layout=layout), [[0.25, 0.0]]
+    )
+    ir = build_ir(model, (Band(659, 661),), sky_grid((5, 5)), half=1, layout=layout)
+    assert int(ir.det_rows[0, 0, 4]) == 4 * 9 + 5
+
+
+class _OptixstuffDispersionWidening(AssertionError):
+    """The known widening at the optixstuff dispersion input cast."""
+
+
+@pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
+@pytest.mark.parametrize("corrected", [False, True])
+@pytest.mark.parametrize(
+    "closed_dispersion",
+    [
+        True,
+        pytest.param(
+            False,
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=_OptixstuffDispersionWidening,
+                reason="optixstuff dispersion_px widens the input to float64",
+            ),
+        ),
+    ],
+    ids=["closed-dispersion", "optixstuff-dispersion"],
+)
+def test_detector_centroids_precision_closure(
+    corrected, closed_dispersion, monkeypatch
+):
+    """Allow 16 units for the trace geometry and two-plane centroid blend.
+
+    A constant dispersion shifts the central lenslet to (4.25, 4).
+    The binary32 query is exactly 2**-11 nm above the first knot in a
+    0.001 nm interval. Rounding the upper knot would move the blend to 1/2.
+    """
+    if closed_dispersion:
+        monkeypatch.setattr(
+            LensletDisperser,
+            "dispersion_px",
+            lambda self, wave: jnp.full_like(wave, self.dispersion_coeffs[0]),
+        )
+    model = _disp(
+        1,
+        detector_shape=(9, 9),
+        psflet_kind="template",
+        dispersion_coeffs=jnp.array([0.25]),
+    )
+    pack = PsfletPack(
+        jnp.ones((1, 2, 2, 2)),
+        jnp.array([-1.0, 1.0]),
+        [650.0, 650.001],
+        jnp.zeros((1, 2)),
+        TEMPLATE_ORIGIN,
+        centroids=jnp.array([[[0.25, -0.5], [0.75, 0.0]]]),
+    )
+    args = (model, jnp.array([650.0 + 2**-11]), pack)
+
+    def evaluate(model, wave, pack):
+        return detector_centroids(model, wave, psflet_pack=pack, corrected=corrected)
+
+    frac = 2**-11 / 0.001
+    expected = (
+        [[[4.5 + 0.5 * frac]], [[3.5 + 0.5 * frac]]]
+        if corrected
+        else [[[4.25]], [[4.0]]]
+    )
+    bound = float(ulps(16, np.float32(1)))
+    np.testing.assert_allclose(evaluate(*args), expected, rtol=bound, atol=0)
+    precision_pair(evaluate, args, bound=bound)
+    try:
+        assert_precision_closed(evaluate, *canonical(args, precision="float32"))
+    except AssertionError as error:
+        if not closed_dispersion and re.fullmatch(
+            r".*/optixstuff/disperser\.py:155:20 \(LensletDisperser\.dispersion_px\)"
+            r": precision widened to float64",
+            str(error),
+        ):
+            raise _OptixstuffDispersionWidening(str(error)) from error
+        raise
 
 
 def _rms(ir, w):

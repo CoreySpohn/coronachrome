@@ -18,9 +18,11 @@ per-wavelength tabulation.
 import jax
 import jax.numpy as jnp
 import numpy as np
+from hwoutils.leaves import canonical
+from hwoutils.precision import like
 from optixstuff.psflet_pack import TEMPLATE_ORIGIN, PsfletPack
 
-from coronachrome.psflet import gaussian_psflet, moffat_psflet
+from coronachrome.psflet import _smear_shifts, gaussian_psflet, moffat_psflet
 
 
 def analytic_psflet_pack(
@@ -100,25 +102,47 @@ def nearest_field_idx(pack, positions):
     return jnp.argmin(d2, axis=1).astype(jnp.int32)
 
 
-def _blend_planes(pack, wavelength_nm):
-    """Linearly blend the two tabulated planes bracketing ``wavelength_nm``.
+def _wavelength_blend(axis, wavelength_nm, dtype):
+    """Find the lower plane and fractional distance to the upper plane."""
+    if len(axis) == 1:
+        shape = np.shape(wavelength_nm)
+        return jnp.zeros(shape, dtype=jnp.int32), jnp.zeros(shape, dtype=dtype)
+    widths = np.diff(axis)
+    if not isinstance(wavelength_nm, jax.Array):
+        wavelength_nm = np.asarray(wavelength_nm, dtype=np.float64)
+        i = np.clip(
+            np.searchsorted(axis, wavelength_nm, side="right") - 1, 0, len(axis) - 2
+        )
+        frac = np.clip((wavelength_nm - axis[i]) / widths[i], 0.0, 1.0)
+        return jnp.asarray(i, dtype=jnp.int32), canonical(frac, precision=dtype)
 
-    Returns ``(n_field, n_off, n_off)``. The caller guarantees the wavelength
-    lies inside the tabulated range; the blend weight is clipped so exact
-    endpoints stay exact.
-    """
-    if len(pack.wavelengths_nm) == 1:
-        return pack.templates[:, 0]
-    lam_grid = pack.wavelengths_nm.array()
+    # The query has already been represented at its input precision. Look up
+    # the interval using the first representable value at or above each knot.
+    # Preserve the knot's low bits separately for the local subtraction.
+    query = jnp.asarray(
+        wavelength_nm, dtype=jnp.result_type(wavelength_nm.dtype, dtype)
+    )
+    rounded = axis.astype(query.dtype)
+    ceiling = np.where(
+        rounded < axis, np.nextafter(rounded, np.inf, dtype=rounded.dtype), rounded
+    )
     i = jnp.clip(
-        jnp.searchsorted(lam_grid, wavelength_nm, side="right") - 1,
+        jnp.searchsorted(like(ceiling, query), query, side="right").astype(jnp.int32)
+        - 1,
         0,
-        lam_grid.shape[0] - 2,
+        len(axis) - 2,
     )
-    frac = jnp.clip(
-        (wavelength_nm - lam_grid[i]) / (lam_grid[i + 1] - lam_grid[i]), 0.0, 1.0
-    )
-    return (1.0 - frac) * pack.templates[:, i] + frac * pack.templates[:, i + 1]
+    delta = (query - like(rounded, query)[i]) - like(axis - rounded, query)[i]
+    frac = delta / like(widths, query)[i]
+    return i, jnp.asarray(jnp.clip(frac, like(0.0, frac), like(1.0, frac)), dtype=dtype)
+
+
+def _blend_planes(pack, i, frac):
+    """Blend the two bracketing template planes for a scalar wavelength."""
+    templates = jnp.asarray(pack.templates, dtype=frac.dtype)
+    if len(pack.wavelengths_nm) == 1:
+        return templates[:, 0]
+    return (1.0 - frac) * templates[:, i] + frac * templates[:, i + 1]
 
 
 def _bilinear(templates, field_idx, dx, dy, offsets):
@@ -144,8 +168,8 @@ def _bilinear(templates, field_idx, dx, dy, offsets):
         in_bounds = (iu >= 0) & (iu < n_off) & (iv >= 0) & (iv < n_off)
         iuc = jnp.clip(iu, 0, n_off - 1).astype(jnp.int32)
         ivc = jnp.clip(iv, 0, n_off - 1).astype(jnp.int32)
-        vals = templates[field_idx[:, None], ivc, iuc]
-        return jnp.where(in_bounds, vals * w, 0.0)
+        tap = templates[field_idx[:, None], ivc, iuc] * w
+        return jnp.where(in_bounds, tap, like(0.0, tap))
 
     return (
         corner(iv0, iu0, (1.0 - fu) * (1.0 - fv))
@@ -193,10 +217,21 @@ def template_weights(pack, dx, dy, wavelength_nm, field_idx, smear_px, n_sub=5):
         Weights with the same shape as ``dx``.
     """
     check_template_origin(pack)
-    templates = _blend_planes(pack, wavelength_nm)
-    shifts = jnp.linspace(-0.5 * smear_px, 0.5 * smear_px, n_sub)
+    dtype = jnp.result_type(
+        dx, dy, wavelength_nm, pack.templates, pack.offsets, smear_px, 1.0
+    )
+    blend = _wavelength_blend(pack.wavelengths_nm.values, wavelength_nm, dtype)
+    return _template_weights(pack, dx, dy, field_idx, smear_px, n_sub, blend)
+
+
+def _template_weights(pack, dx, dy, field_idx, smear_px, n_sub, blend):
+    i, frac = blend
+    dx, dy = (jnp.asarray(x, dtype=frac.dtype) for x in (dx, dy))
+    offsets = jnp.asarray(pack.offsets, dtype=frac.dtype)
+    templates = _blend_planes(pack, i, frac)
+    shifts = _smear_shifts(smear_px, n_sub, dx)
 
     def one(shift):
-        return _bilinear(templates, field_idx, dx - shift, dy, pack.offsets)
+        return _bilinear(templates, field_idx, dx - shift, dy, offsets)
 
     return jnp.mean(jax.vmap(one)(shifts), axis=0)

@@ -6,32 +6,44 @@ from operator import index
 
 import jax
 import jax.numpy as jnp
+from hwoutils.precision import float_dtype
 from hwoutils.radial import get_center
 from optixstuff.grids import PixelGrid
 
 
-def square_grid(n_lenslets):
-    """Return (x,y) centres, x-major order, in lenslet pitches.
+def square_grid(n_lenslets, *, dtype=None):
+    """Return (x, y) centers in x-major order, in lenslet pitches.
 
-    Subtract the geometric pixel centre (n-1)/2 from each index.
+    Args:
+        n_lenslets: Number of lenslets per side.
+        dtype: Working real dtype. Defaults to the construction precision.
+
+    Returns:
+        Coordinates relative to the geometric center (n-1)/2.
     """
-    idx = jnp.arange(n_lenslets) - get_center((n_lenslets, n_lenslets))[0]
+    dtype = float_dtype() if dtype is None else dtype
+    idx = jnp.arange(n_lenslets, dtype=dtype) - get_center((n_lenslets, n_lenslets))[0]
     xx, yy = jnp.meshgrid(idx, idx, indexing="ij")
-    return jnp.stack([xx.ravel(), yy.ravel()], axis=1).astype(float)
+    return jnp.stack([xx.ravel(), yy.ravel()], axis=1)
 
 
-def hex_grid(n_lenslets):
-    """Return staggered-row (x,y) centres, row-major, in lenslet pitches.
+def hex_grid(n_lenslets, *, dtype=None):
+    """Return staggered-row (x, y) centers in row-major order, in lenslet pitches.
 
-    Subtract the geometric row/column centre and the mean odd-row
-    x stagger, so the centroid is zero for both even and odd n.
+    Args:
+        n_lenslets: Number of lenslets per side.
+        dtype: Working real dtype. Defaults to the construction precision.
+
+    Returns:
+        Coordinates with zero centroid for both even and odd grid sizes.
     """
+    dtype = float_dtype() if dtype is None else dtype
     origin = get_center((n_lenslets, n_lenslets))[0]
-    row, col = jnp.indices((n_lenslets, n_lenslets))
+    row, col = jnp.indices((n_lenslets, n_lenslets), dtype=jnp.int32)
     stagger_mean = (n_lenslets // 2) / (2 * n_lenslets)
-    x = col - origin + 0.5 * (row % 2)
+    x = col.astype(dtype) - origin + 0.5 * (row % 2).astype(dtype)
     x = x - stagger_mean
-    y = (row - origin) * math.sqrt(3) / 2
+    y = (row.astype(dtype) - origin) * math.sqrt(3) / 2
     return jnp.stack([x.ravel(), y.ravel()], axis=1)
 
 
@@ -41,6 +53,10 @@ class LensletLayout:
     """Layout geometry independent of the disperser hardware.
 
     The centroid of the square or staggered hex array is zero.
+
+    Attributes:
+        n_lenslets: Number of lenslets per side.
+        grid_kind: Square or staggered hex lattice.
     """
 
     n_lenslets: int
@@ -53,10 +69,17 @@ class LensletLayout:
         if self.grid_kind not in ("square", "hex"):
             raise ValueError("grid_kind must be square or hex")
 
-    def positions(self):
-        """Return centres in the documented square/hex channel order."""
+    def positions(self, *, dtype=None):
+        """Return centers in the documented square or hex channel order.
+
+        Args:
+            dtype: Working real dtype. Defaults to the construction precision.
+
+        Returns:
+            Lenslet centers in pitch units.
+        """
         fn = square_grid if self.grid_kind == "square" else hex_grid
-        return fn(self.n_lenslets)
+        return fn(self.n_lenslets, dtype=dtype)
 
     def image_geometry(self, pitch_arcsec, angle_rad, orientation):
         """Return an affine sky grid and channel-to-flat-pixel indices.

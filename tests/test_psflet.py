@@ -2,8 +2,65 @@
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pytest
+from hwoutils.leaves import canonical
+from hwoutils.testing import assert_precision_closed, precision_pair, ulps
 
 from coronachrome.psflet import gaussian_psflet, moffat_psflet, psflet_weights
+
+
+@pytest.mark.float64_only(reason="precision_pair and jaxpr audit require x64")
+@pytest.mark.parametrize(
+    "profile", ["gaussian", "moffat", "smeared_gaussian", "smeared_moffat"]
+)
+def test_psflet_precision_closure(profile):
+    """Allow 64 rounding units at the peak weight for the fixture offsets.
+
+    The four offsets are within one pixel of the centroid. Allow eight units
+    for the smear ramp and offset, 32 for two erf differences and their product
+    or the Moffat radius, division, power and midpoint grid, and 24 for the
+    pairwise reductions of 25 midpoint values and five smeared profiles.
+    """
+    dx = jnp.array([-0.75, -0.25, 0.125, 0.5])
+    dy = jnp.array([0.5, 0.125, -0.25, -0.75])
+    params = jnp.array([0.75, 2.5])
+
+    def evaluate(dx, dy, params):
+        if profile == "gaussian":
+            return gaussian_psflet(dx, dy, params[0])
+        if profile == "moffat":
+            return moffat_psflet(dx, dy, *params)
+        return psflet_weights(dx, dy, profile.removeprefix("smeared_"), params, 0.25)
+
+    args = (dx, dy, params)
+    assert_precision_closed(evaluate, *canonical(args, precision="float32"))
+    precision_pair(evaluate, args, bound=float(ulps(64, np.float32(1))))
+
+
+@pytest.mark.parametrize("smeared", [False, True])
+def test_moffat_numpy_offsets_match_jit(smeared):
+    """The center pixel has unit point weight and a symmetric integrated weight.
+
+    The single midpoint gives one at the origin. For the integrated case,
+    allow 32 rounding units for the radius, inverse and 25-point average.
+    """
+    offsets = np.zeros(1, dtype=np.float32)
+    params = [np.ones(1, dtype=np.float32), 1.0]
+
+    def evaluate(dx):
+        if smeared:
+            return psflet_weights(dx, dx, "moffat", params, 0.0)
+        return moffat_psflet(dx, dx, 1.0, 1.0, n_quad=1)
+
+    axis = np.arange(-2, 3) / 5
+    expected = np.mean(1 / (1 + axis[:, None] ** 2 + axis**2)) if smeared else 1.0
+    for evaluate_fn in (evaluate, jax.jit(evaluate)):
+        actual = evaluate_fn(offsets)
+        assert actual.dtype == np.float32
+        np.testing.assert_allclose(
+            actual, expected, rtol=float(ulps(32, np.float32(1))), atol=0
+        )
 
 
 def test_pixel_integration_reduces_sampling_phase_bias():
