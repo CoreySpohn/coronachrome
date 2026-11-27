@@ -33,6 +33,8 @@ exclude_patterns = ["_build", ".build", "Thumbs.db", ".DS_Store"]
 autoapi_dirs = ["../src"]
 autoapi_ignore = ["**/*version.py"]
 autodoc_typehints = "description"
+# AutoAPI already indexes fields; Napoleon should render their descriptions only.
+napoleon_use_ivar = True
 
 myst_enable_extensions = ["amsmath", "dollarmath"]
 
