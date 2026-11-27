@@ -45,6 +45,7 @@ test = [
     "pytest-fail-slow>=0.1.0",
     "hwoutils[jax]>=3.0.0",
     "coronachrome[viz]>=1.1.0",
+    "physicaloptix>=4.0.0",  # unreleased: next release, see .github/sibling-pins.txt
 ]
 # eyepiece>=0.4.0 carries PlotResult, imshow_log, imshow_diverging,
 # SourceStyles and record; hwostyle>=1.4.0 carries the semantic cmaps
