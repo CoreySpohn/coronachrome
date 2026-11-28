@@ -1,5 +1,63 @@
 # Changelog
 
+## [2.0.0](https://github.com/CoreySpohn/coronachrome/compare/v1.1.0...v2.0.0) (2026-11-28)
+
+
+### ⚠ BREAKING CHANGES
+
+* **coronachrome:** close the IFS build and render forwards at their working precision
+* **coronachrome:** decide extraction support identically in both lanes, keep zero-weight derivatives finite, scale the matched-filter adjoint
+* **extract:** Columns with squared norm below the dtype's smallest normal number return zero flux and infinite variance instead of a floored value; faint clipped columns are solved exactly.
+* **extract:** detector_statistics raises for photon-carrier, spectral or n_pix records and sums a supplied variance record over bands with the signal.
+* **render:** Band cubes use the leading axis ("band",); ("wavelength",) input is refused. SpatialChannelIR.n_wav is now n_bands with no alias.
+* **build:** Footprints clipped by the detector edge keep their clipped fraction instead of being renormalized to unit flux. An explicit pack must declare template_origin centroid.
+* **templates:** analytic packs carry template_origin and the documented pack format is 2; older packs must be regenerated.
+* **ir:** SpatialChannelIR.collection_overlap axes and sparse entries change from NumPy arrays to jax.Array (indices stay int32).
+* **templates:** a one-wavelength pack used for a wider band is refused.
+* name every wavelength interval end low_nm and high_nm
+* build detector statistics on the single optixstuff Rates type
+* read named quadrature weights
+* import grids and spectral types from optixstuff
+* take PsfletPack and its npz io from optixstuff
+* render through shared footprint overlaps and apply the steradian factor to radiance inputs
+* build lenslet quadratures from declared spectral breaks
+* remove rebin_channels; band rebinning is hwoutils.spectral.rebin_bands
+* **viz:** take colours from eyepiece
+* channels come from Band, dispersion from the disperser and lenslet layout from the geometric centre only
+* render and extract on shared grids, channel bands and the detector contract, with exact lenslet cell integrals
+
+### Features
+
+* render and extract on shared grids, channel bands and the detector contract, with exact lenslet cell integrals ([ddd6997](https://github.com/CoreySpohn/coronachrome/commit/ddd6997c84aa143b99d08b9a5b72603207159b60))
+* **render:** name the IFS cube axis band and rename n_wav to n_bands ([884010f](https://github.com/CoreySpohn/coronachrome/commit/884010f76ce33bfc322489ef928650e18a6383ea))
+
+
+### Bug Fixes
+
+* **build:** normalize PSFlet footprints before the detector mask and refuse legacy-origin packs ([a0219ed](https://github.com/CoreySpohn/coronachrome/commit/a0219ed1d77ce591a1468875317b9e3e9cccbac4))
+* **coronachrome:** close the IFS build and render forwards at their working precision ([bc2b6cd](https://github.com/CoreySpohn/coronachrome/commit/bc2b6cd0d59cc7b19d7eb3f2495f45b022152219))
+* **coronachrome:** decide extraction support identically in both lanes, keep zero-weight derivatives finite, scale the matched-filter adjoint ([ecf14a5](https://github.com/CoreySpohn/coronachrome/commit/ecf14a5077698a9c8532e7ec1fe6c5af2a6e28f2))
+* **extract:** refuse non-electron, spectral and aperture records in detector_statistics ([9d1e8b2](https://github.com/CoreySpohn/coronachrome/commit/9d1e8b21412efe84d2ad196aec4b785c2c54a139))
+* **extract:** scale solvers by the exact column norm and remove unsupported columns ([c94cd65](https://github.com/CoreySpohn/coronachrome/commit/c94cd65811174b49d30ec4b52740759a323e7012))
+* **ir:** store collection overlap weights as strong leaves ([5b50e61](https://github.com/CoreySpohn/coronachrome/commit/5b50e618655924ed687efa8275a0fe87906a981b))
+* render through shared footprint overlaps and apply the steradian factor to radiance inputs ([fcebc3d](https://github.com/CoreySpohn/coronachrome/commit/fcebc3dbb954ab0d596e40b1cbb4ca5bc297b7e5))
+* **templates:** accept a one-wavelength PSFlet pack only for a band at its wavelength ([6a90d99](https://github.com/CoreySpohn/coronachrome/commit/6a90d99ed79e7751a61c3cf36a008a59bd51b3f4))
+* **templates:** declare the template origin in analytic packs and document pack format 2 ([32d4fb9](https://github.com/CoreySpohn/coronachrome/commit/32d4fb9d768c58bff0c48cb0df6950981b298f13))
+* **templates:** read the PSFlet pack grid through its accessor and allow one-wavelength packs; widen the monochromatic test bands ([b525a3e](https://github.com/CoreySpohn/coronachrome/commit/b525a3e7472a833b40d1fa34789f9be037345aca))
+
+
+### Code Refactoring
+
+* build detector statistics on the single optixstuff Rates type ([3659072](https://github.com/CoreySpohn/coronachrome/commit/36590720c42814fc0aad21484fae91105321b089))
+* build lenslet quadratures from declared spectral breaks ([ccdeb40](https://github.com/CoreySpohn/coronachrome/commit/ccdeb408d1e0c0b4fa5bfbe63f238c1be048a048))
+* channels come from Band, dispersion from the disperser and lenslet layout from the geometric centre only ([a95d381](https://github.com/CoreySpohn/coronachrome/commit/a95d38108cdbaffb975574902e941d0c50cdc7c9))
+* import grids and spectral types from optixstuff ([609a0e5](https://github.com/CoreySpohn/coronachrome/commit/609a0e58b867b842d0a44b5480db2fe292c7effc))
+* name every wavelength interval end low_nm and high_nm ([1eda5d8](https://github.com/CoreySpohn/coronachrome/commit/1eda5d857a9b28545e481d74003e595e840cb9c4))
+* read named quadrature weights ([0a0c10f](https://github.com/CoreySpohn/coronachrome/commit/0a0c10f57b8b62d7c084fd8aee5ea01990ec1088))
+* remove rebin_channels; band rebinning is hwoutils.spectral.rebin_bands ([4eac93f](https://github.com/CoreySpohn/coronachrome/commit/4eac93fbe959ec8dba268500c380d5f0991273e5))
+* take PsfletPack and its npz io from optixstuff ([6f6246a](https://github.com/CoreySpohn/coronachrome/commit/6f6246a2f6dc5bd123b55122641456b3a41dfc9d))
+* **viz:** take colours from eyepiece ([58f8f67](https://github.com/CoreySpohn/coronachrome/commit/58f8f6762e4d4df95970ca7c9fa224c6d1253874))
+
 ## [1.1.0](https://github.com/CoreySpohn/coronachrome/compare/v1.0.0...v1.1.0) (2026-09-29)
 
 
